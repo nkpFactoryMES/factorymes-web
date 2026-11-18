@@ -1,0 +1,57 @@
+/* 공통 모양은 web/wwwroot/factorymes.css에 있다. 여기에는 작업지시 화면 고유 규칙만 둔다. */
+
+/* 작업 상태 배지: 글자는 그대로 두고 색으로 단계를 보조한다.
+   RUNNING은 정상 진행이라 위험색(빨강)이 아닌 청록, PAUSED는 주의(Amber), 나머지는 차분한 톤. */
+.badge.order-running {
+  border-color: var(--teal);
+  background: var(--teal);
+  color: #ffffff;
+}
+
+.badge.order-paused {
+  background: var(--amber-tint);
+  color: var(--amber);
+}
+
+.badge.order-released,
+.badge.order-submitted {
+  background: var(--teal-tint);
+  color: var(--teal-dark);
+}
+
+.badge.order-draft,
+.badge.order-closed,
+.badge.order-cancelled {
+  background: var(--cool);
+  color: var(--muted);
+}
+
+/* 좁은 화면에서 작업 이름이 단어 하나씩 끊기지 않게 최소 폭을 둔다(표는 section 안에서 스크롤). */
+td:first-child {
+  min-width: 140px;
+}
+
+/* 목록과 선택한 작업 상세를 좌우로 둔다(넓은 화면). 상세 칸은 따로 스크롤된다. */
+.orders-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+@media (min-width: 1200px) {
+  .orders-layout.has-detail {
+    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+  }
+
+  .orders-layout.has-detail > section:last-child {
+    position: sticky;
+    top: 0;
+    max-height: calc(100vh - 140px);
+    overflow-y: auto;
+  }
+}
+
+.orders-layout > section {
+  margin: 0;
+}

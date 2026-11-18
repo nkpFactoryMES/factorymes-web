@@ -1,0 +1,10 @@
+<Project>
+  <!-- 모든 프로젝트 공통: .NET 10, nullable, 잠금 파일로 restore 결과 고정 -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+</Project>

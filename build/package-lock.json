@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "packages": [
+    {
+      "id": "FactoryMES.Contracts",
+      "version": "1.0.0",
+      "file": "FactoryMES.Contracts.1.0.0.nupkg",
+      "repo": "factorymes-platform",
+      "tag": "v1.0.0",
+      "sha256": "7e80dda61bf6f6f14fe594ad5bd22d86732268cd7b16583b5f138283bf846f0c"
+    },
+    {
+      "id": "FactoryMES.Foundation",
+      "version": "1.0.0",
+      "file": "FactoryMES.Foundation.1.0.0.nupkg",
+      "repo": "factorymes-platform",
+      "tag": "v1.0.0",
+      "sha256": "3d9cae66c44b56d55646faf3d5fac79f42152c62a374b421462f5c22345083cd"
+    }
+  ]
+}

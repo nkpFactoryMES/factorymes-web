@@ -1,0 +1,27 @@
+# 빌드 산출물
+**/bin/
+**/obj/
+
+# build/restore-packages.ps1이 받는 공유 패키지(Release 자산에서 다시 받는다)
+.packages/
+
+# 레포 전용 NuGet 캐시(NuGet.Config globalPackagesFolder)
+.nuget/
+
+# 로컬 설정·비밀
+.env
+.secrets/
+*.pfx
+*.pem
+*.key
+
+# IDE
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+
+# 로컬 검증 산출물은 공개하지 않는다.
+artifacts/
+verification-results/

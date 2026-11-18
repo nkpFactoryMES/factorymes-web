@@ -1,0 +1,492 @@
+@using FactoryMES.Web.Client
+@implements IDisposable
+@inject MesApi Api
+
+@* 선택한 경보의 조치(등록 → 시작 → 결과 입력 완료)와 관리자 종결(정상·강제) 화면.
+   조치를 완료해도 경보가 복구·종결되지는 않는다. 권한·상태·버전의 최종 판단은 서버가 한다.
+   변경에 성공하거나 충돌하면 Changed로 부모가 경보 상세(버전)를 다시 읽고,
+   새 버전이 내려오면 이 화면이 조치 목록을 다시 읽는다. *@
+<section class="alarm-actions">
+  <h3>조치</h3>
+  <p
+    class="action-status"
+    role="status"
+  >@Message</p>
+  <p>
+    조치는 경보에 대해 한 일을 남기는 기록입니다. 조치를 완료해도 경보가 복구되거나 종결되지는 않습니다.
+    등록한 조치는 취소할 수 없으므로, 종결하려면 모든 조치를 시작·완료해야 합니다.
+  </p>
+
+  @if (LoadFailed)
+  {
+    <p class="conflict-wait">조치 목록을 읽지 못했습니다. 다시 조회하기 전에는 조치를 바꾸지 않습니다.</p>
+    <button
+      type="button"
+      disabled="@Busy"
+      @onclick="RetryLoadAsync"
+    >조치 목록 다시 조회</button>
+  }
+
+  @if (Loading && !LoadFailed)
+  {
+    <p>조치 목록을 읽는 중입니다.</p>
+  }
+
+  <fieldset disabled="@(Busy || Blocked || LoadFailed || Loading)">
+    @if (Actions.Count == 0)
+    {
+      <p>등록된 조치가 없습니다.</p>
+    }
+    else
+    {
+      <ul class="actions">
+        @foreach (var action in Actions)
+        {
+          <li class="@action.Status.ToLowerInvariant()">
+            <p>
+              <strong>조치 #@action.ActionId</strong>
+              · @StatusLabel(action.Status) · 담당 사용자 #@action.OwnerId
+            </p>
+            <p>내용: @action.Content</p>
+            @if (action.Result is not null)
+            {
+              <p>결과: @action.Result</p>
+            }
+
+            @if (!Closed && CanChange(action) && action.Status == "OPEN")
+            {
+              <button
+                type="button"
+                @onclick="() => StartAsync(action)"
+              >조치 시작</button>
+            }
+
+            @if (!Closed && CanChange(action) && action.Status == "IN_PROGRESS")
+            {
+              <label>
+                조치 결과
+                <textarea
+                  maxlength="1000"
+                  value="@ResultInput(action.ActionId)"
+                  @oninput="args => SetResult(action.ActionId, args)"
+                ></textarea>
+              </label>
+              <button
+                type="button"
+                @onclick="() => CompleteAsync(action)"
+              >조치 완료</button>
+            }
+          </li>
+        }
+      </ul>
+    }
+
+    @if (!Closed)
+    {
+      <form
+        class="action-create"
+        @onsubmit="CreateAsync"
+        @onsubmit:preventDefault="true"
+      >
+        <h4>조치 등록</h4>
+        @if (IsAdmin)
+        {
+          <label>
+            담당 사용자 ID
+            <input
+              @bind="OwnerInput"
+              inputmode="numeric"
+            />
+          </label>
+          <p>관리자는 활성 관리자나 이 경보를 볼 수 있는 작업자를 담당으로 지정할 수 있습니다.</p>
+        }
+        <label>
+          조치 내용
+          <textarea
+            @bind="ContentInput"
+            maxlength="1000"
+          ></textarea>
+        </label>
+        <button type="submit">조치 등록</button>
+      </form>
+    }
+    else
+    {
+      <p>종결된 경보에는 조치를 등록하거나 바꿀 수 없습니다.</p>
+    }
+
+    @if (IsAdmin && !Closed)
+    {
+      <div class="alarm-close">
+        <h4>경보 종결(관리자)</h4>
+        <p>조건은 화면이 미리 보여 주는 값이며, 최종 판단은 서버가 합니다.</p>
+        <ul class="close-conditions">
+          <li>미완료 조치(OPEN·진행 중): @(OpenCount)건 @Mark(OpenCount == 0)</li>
+          <li>완료한 조치: @(DoneCount)건</li>
+        </ul>
+        <label>
+          종결 사유
+          <textarea
+            @bind="ReasonInput"
+            maxlength="1000"
+          ></textarea>
+        </label>
+
+        <h5>정상 종결</h5>
+        <p>
+          복구(RECOVERED) @Mark(Alarm.Status == "RECOVERED") ·
+          경보 확인(ACK) @Mark(Alarm.AckAt is not null) ·
+          완료 조치 1건 이상 @Mark(DoneCount > 0) ·
+          미완료 조치 0건 @Mark(OpenCount == 0)
+        </p>
+        <button
+          type="button"
+          @onclick="CloseAsync"
+        >정상 종결</button>
+
+        <h5>강제 종결</h5>
+        <p>
+          발생 중(ACTIVE) @Mark(Alarm.Status == "ACTIVE") ·
+          미완료 조치 0건 @Mark(OpenCount == 0)
+        </p>
+        <p class="force-warning">
+          강제 종결은 복구가 아닙니다. 복구 시각은 기록되지 않고, 이 규칙은 종결 시점부터 30분 동안
+          새 경보를 만들지 않습니다(억제).
+        </p>
+        <label>
+          <input
+            type="checkbox"
+            @bind="ForceConfirmed"
+          />
+          복구가 아니며 30분 동안 새 경보가 억제됨을 확인했습니다.
+        </label>
+        <button
+          type="button"
+          disabled="@(!ForceConfirmed)"
+          @onclick="ForceCloseAsync"
+        >강제 종결</button>
+      </div>
+    }
+  </fieldset>
+</section>
+
+@code {
+    [Parameter, EditorRequired]
+    public AlarmView Alarm { get; set; } = default!;
+
+    [Parameter]
+    public bool IsAdmin { get; set; }
+
+    [Parameter, EditorRequired]
+    public string CurrentUserId { get; set; } = "";
+
+    // 부모가 최신 경보를 아직 다시 읽지 못한 상태면 보내지 않는다.
+    [Parameter]
+    public bool Blocked { get; set; }
+
+    [Parameter]
+    public EventCallback Changed { get; set; }
+
+    private List<AlarmActionView> Actions = [];
+    private string? LoadedKey;
+    private bool LoadFailed;
+    private bool Busy;
+    private string Message = "";
+
+    private string OwnerInput = "";
+    private string ContentInput = "";
+    private string ReasonInput = "";
+    private bool ForceConfirmed;
+    private readonly Dictionary<string, string> Results = [];
+    private bool Disposed;
+
+    // 마지막으로 조회를 시작한 키. 같은 키는 자동으로 한 번만 읽고, 실패하면 수동 재조회만 한다.
+    private string? RequestedKey;
+
+    // 변경 뒤 부모가 경보를 다시 읽는 동안에는 이전 버전으로 목록을 읽지 않는다.
+    private bool AwaitingParent;
+
+    private bool Closed => Alarm.Status == "CLOSED";
+    private int OpenCount => Actions.Count(x => x.Status != "DONE");
+    private int DoneCount => Actions.Count(x => x.Status == "DONE");
+
+    // 버전이 오르면 조치 목록을 다시 읽는다. 다 읽기 전에는 변경을 막는다.
+    private string CurrentKey => Alarm.AlarmId + ":" + Alarm.Version;
+    private bool Loading => LoadedKey != CurrentKey;
+
+    // 부모가 @key=AlarmId로 경보마다 인스턴스를 따로 만든다.
+    // 그래서 입력은 이 경보에만 속하고, 같은 경보의 버전이 바뀌어도(충돌 뒤) 유지된다.
+    protected override void OnInitialized()
+    {
+        OwnerInput = CurrentUserId;
+    }
+
+    public void Dispose()
+    {
+        Disposed = true;
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (AwaitingParent)
+        {
+            return;
+        }
+
+        await LoadIfNeededAsync();
+    }
+
+    // 자동 조회: 부모가 최신 경보를 못 읽은 상태(Blocked)면 건너뛰고, 키당 한 번만 시도한다.
+    private async Task LoadIfNeededAsync()
+    {
+        var key = CurrentKey;
+        if (Blocked || Disposed || key == LoadedKey || key == RequestedKey)
+        {
+            return;
+        }
+
+        RequestedKey = key;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        var key = CurrentKey;
+        var alarmId = Alarm.AlarmId;
+        try
+        {
+            var items = new List<AlarmActionView>();
+            string? cursor = null;
+            do
+            {
+                var suffix = cursor is null ? "" : "&cursor=" + Uri.EscapeDataString(cursor);
+                var page = await Api.GetAsync<PageResult<AlarmActionView>>(
+                    $"api/v1/alarms/{Uri.EscapeDataString(alarmId)}/actions?limit=100{suffix}"
+                );
+                items.AddRange(page.Items);
+                cursor = page.NextCursor;
+            }
+            while (cursor is not null);
+
+            // 읽는 동안 다른 경보·버전으로 바뀌었으면 늦게 온 이 결과는 버린다.
+            if (key != CurrentKey)
+            {
+                return;
+            }
+
+            Actions = items;
+            LoadedKey = key;
+            LoadFailed = false;
+        }
+        catch (Exception)
+        {
+            // 이미 다른 경보·버전으로 바뀌었으면 이 실패는 무시한다(새 키로 다시 읽음).
+            if (key != CurrentKey)
+            {
+                return;
+            }
+
+            LoadFailed = true;
+            Message = "조치 목록을 읽지 못했습니다. '조치 목록 다시 조회'를 눌러 주세요.";
+        }
+    }
+
+    private async Task RetryLoadAsync()
+    {
+        Busy = true;
+        Message = "처리 중입니다.";
+        RequestedKey = CurrentKey;
+        await LoadAsync();
+        if (!LoadFailed)
+        {
+            Message = "조치 목록을 다시 읽었습니다.";
+        }
+
+        Busy = false;
+    }
+
+    private bool CanChange(AlarmActionView action) =>
+        IsAdmin || action.OwnerId == CurrentUserId;
+
+    private void SetResult(string actionId, ChangeEventArgs args) =>
+        Results[actionId] = args.Value?.ToString() ?? "";
+
+    private string ResultInput(string actionId) =>
+        Results.TryGetValue(actionId, out var value) ? value : "";
+
+    private Task CreateAsync()
+    {
+        var alarmId = Alarm.AlarmId;
+        var version = Alarm.Version;
+        var owner = IsAdmin ? OwnerInput.Trim() : CurrentUserId;
+        var content = ContentInput.Trim();
+
+        return RunAsync(
+            async () =>
+            {
+                Require(owner, "담당 사용자 ID");
+                Require(content, "조치 내용");
+                await Api.SendAsync<AlarmActionView>(
+                    $"api/v1/alarms/{Uri.EscapeDataString(alarmId)}/actions",
+                    new ActionCreate(version, owner, content)
+                );
+                ContentInput = "";
+            },
+            "조치를 등록했습니다."
+        );
+    }
+
+    private Task StartAsync(AlarmActionView action)
+    {
+        var alarmVersion = Alarm.Version;
+
+        return RunAsync(
+            () => Api.SendAsync<AlarmActionView>(
+                $"api/v1/alarm-actions/{Uri.EscapeDataString(action.ActionId)}/start",
+                new ActionStart(action.Version, alarmVersion)
+            ),
+            "조치를 시작했습니다."
+        );
+    }
+
+    private Task CompleteAsync(AlarmActionView action)
+    {
+        var alarmVersion = Alarm.Version;
+        var result = ResultInput(action.ActionId).Trim();
+
+        return RunAsync(
+            async () =>
+            {
+                Require(result, "조치 결과");
+                await Api.SendAsync<AlarmActionView>(
+                    $"api/v1/alarm-actions/{Uri.EscapeDataString(action.ActionId)}/complete",
+                    new ActionComplete(
+                        action.Version,
+                        alarmVersion,
+                        result
+                    )
+                );
+                Results.Remove(action.ActionId);
+            },
+            "조치를 완료했습니다. 경보 복구·종결은 따로 확인해 주세요."
+        );
+    }
+
+    private Task CloseAsync() => SendCloseAsync("close", "경보를 정상 종결했습니다.");
+
+    private Task ForceCloseAsync() => SendCloseAsync(
+        "force-close",
+        "경보를 강제 종결했습니다. 30분 동안 이 규칙의 새 경보가 억제됩니다."
+    );
+
+    private Task SendCloseAsync(string kind, string done)
+    {
+        var alarmId = Alarm.AlarmId;
+        var version = Alarm.Version;
+        var reason = ReasonInput.Trim();
+
+        return RunAsync(
+            async () =>
+            {
+                Require(reason, "종결 사유");
+                await Api.SendAsync<AlarmView>(
+                    $"api/v1/alarms/{Uri.EscapeDataString(alarmId)}/{kind}",
+                    new ReasonCommand(version, reason)
+                );
+                ReasonInput = "";
+                ForceConfirmed = false;
+            },
+            done
+        );
+    }
+
+    private static void Require(string value, string label)
+    {
+        if (value.Length is < 1 or > 1000)
+        {
+            throw new InvalidOperationException(label + ": 1~1000자로 입력해 주세요.");
+        }
+    }
+
+    // 성공하면 부모가 최신 경보를 다시 읽는다(새 버전 → 조치 목록도 다시 읽음).
+    // 409는 입력을 지키고 부모가 최신 값을 다시 읽게 한다. 5xx·통신 오류는 자동 재전송하지 않는다.
+    private async Task RunAsync(Func<Task> action, string done)
+    {
+        if (Busy || Blocked || LoadFailed || Loading)
+        {
+            return;
+        }
+
+        var alarmId = Alarm.AlarmId;
+        Busy = true;
+        Message = "처리 중입니다.";
+        var reload = false;
+        try
+        {
+            await action();
+            Message = done;
+            reload = true;
+        }
+        catch (ApiFault error) when (error.Status == 409)
+        {
+            Message = "다른 변경과 충돌했거나 지금 상태에서 할 수 없습니다(" + error.Message
+                + "). 입력은 그대로 두고 최신 값을 다시 읽습니다. 확인한 뒤 다시 시도해 주세요.";
+            reload = true;
+        }
+        catch (ApiFault error) when (error.Status >= 500)
+        {
+            Message = "서버 응답을 확인하지 못했습니다. 다시 보내기 전에 경보를 새로고침해 결과를 확인해 주세요.";
+        }
+        catch (HttpRequestException)
+        {
+            Message = "네트워크 오류로 결과를 확인하지 못했습니다. 경보를 새로고침해 결과를 확인해 주세요.";
+        }
+        catch (ApiFault error)
+        {
+            Message = error.Message + $" ({error.Status})";
+        }
+        catch (InvalidOperationException error)
+        {
+            Message = error.Message;
+        }
+        finally
+        {
+            Busy = false;
+        }
+
+        // 기다리는 동안 다른 경보로 바뀌어 이 인스턴스가 버려졌으면 부모를 다시 읽게 하지 않는다.
+        if (Disposed || alarmId != Alarm.AlarmId)
+        {
+            return;
+        }
+
+        if (reload)
+        {
+            // 같은 버전으로 남는 경우(예: 거절된 409)에도 목록을 새로 읽도록 기록을 지운다.
+            // 부모 재조회가 끝날 때까지 자동 조회를 멈췄다가, 끝난 뒤 현재 키로 한 번만 읽는다.
+            LoadedKey = null;
+            RequestedKey = null;
+            AwaitingParent = true;
+            try
+            {
+                await Changed.InvokeAsync();
+            }
+            finally
+            {
+                AwaitingParent = false;
+            }
+
+            await LoadIfNeededAsync();
+        }
+    }
+
+    private static string StatusLabel(string status) => status switch
+    {
+        "OPEN" => "등록됨(OPEN)",
+        "IN_PROGRESS" => "진행 중(IN_PROGRESS)",
+        "DONE" => "완료(DONE)",
+        _ => status
+    };
+
+    private static string Mark(bool ok) => ok ? "✓" : "✗";
+}

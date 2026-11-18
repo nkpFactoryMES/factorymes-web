@@ -1,0 +1,239 @@
+@page "/dashboard"
+@using FactoryMES.Web.Client
+@inject MesApi Api
+
+@* 업무 shell 안의 현황판. 실제 API 조회 결과만 보여 주고 추정·장식용 숫자는 만들지 않는다.
+   로그인 화면("/")의 현황판과 같은 자료를 MesApi(쿠키·CSRF 그대로)로 읽는다. *@
+<PageTitle>대시보드 · FactoryMES</PageTitle>
+<main>
+  <header>
+    <div>
+      <p>FACTORY MES / DASHBOARD</p>
+      <h1>대시보드</h1>
+      <p>지금 확인할 경보·알림·작업입니다.</p>
+    </div>
+  </header>
+  <p role="status">@Message</p>
+
+  <fieldset disabled="@Busy">
+    <div class="toolbar">
+      <button @onclick="LoadAsync">현황 새로고침</button>
+    </div>
+
+    <div class="dash-grid">
+      <section class="dash-panel @Tone(AlarmFailed, ActiveAlarms.Count, "tone-red")">
+        <div class="dash-panel-head">
+          <h2>발생 중 경보</h2>
+          <strong class="dash-count">@CountText(ActiveAlarms.Count, 100, MoreAlarms)</strong>
+        </div>
+        @if (AlarmFailed)
+        {
+          <p class="conflict-wait">불러오지 못했습니다. '현황 새로고침'을 눌러 주세요.</p>
+        }
+        else if (ActiveAlarms.Count == 0)
+        {
+          <p class="dash-empty">발생 중인 경보가 없습니다.</p>
+        }
+        else
+        {
+          <ul class="dash-rows">
+            @foreach (var alarm in ActiveAlarms.Take(5))
+            {
+              <li>
+                <a href="@($"/alarms?alarmId={Uri.EscapeDataString(alarm.AlarmId)}")">
+                  #@alarm.AlarmId 설비 @alarm.EquipmentId · @alarm.Kind
+                </a>
+                <span class="badge @alarm.Severity.ToLowerInvariant()">@alarm.Severity</span>
+                <span class="dash-meta">발생 @Kst(alarm.OpenedAt)</span>
+              </li>
+            }
+          </ul>
+        }
+        <a
+          class="dash-more"
+          href="/alarms"
+        >경보 화면으로</a>
+      </section>
+
+      <section class="dash-panel @Tone(InboxFailed, Unread.Count, "tone-teal")">
+        <div class="dash-panel-head">
+          <h2>읽지 않은 알림</h2>
+          <strong class="dash-count">@CountText(Unread.Count, 50, MoreUnread)</strong>
+        </div>
+        @if (InboxFailed)
+        {
+          <p class="conflict-wait">불러오지 못했습니다. '현황 새로고침'을 눌러 주세요.</p>
+        }
+        else if (Unread.Count == 0)
+        {
+          <p class="dash-empty">새 알림이 없습니다.</p>
+        }
+        else
+        {
+          <ul class="dash-rows">
+            @foreach (var notice in Unread.Take(5))
+            {
+              <li>
+                <a href="@NoticeHref(notice)">
+                  @notice.Title
+                </a>
+                <span class="dash-meta">@Kst(notice.CreatedAt)</span>
+              </li>
+            }
+          </ul>
+        }
+        <a
+          class="dash-more"
+          href="/inbox"
+        >알림함으로</a>
+      </section>
+
+      <section class="dash-panel @Tone(OrderFailed, ActiveOrders.Count, "tone-amber")">
+        <div class="dash-panel-head">
+          <h2>진행할 작업</h2>
+          <strong class="dash-count">@(ActiveOrders.Count)건</strong>
+        </div>
+        <p class="hint">최근 작업 25건 중 발행·진행·일시정지·제출 상태</p>
+        @if (OrderFailed)
+        {
+          <p class="conflict-wait">불러오지 못했습니다. '현황 새로고침'을 눌러 주세요.</p>
+        }
+        else if (ActiveOrders.Count == 0)
+        {
+          <p class="dash-empty">진행할 작업이 없습니다.</p>
+        }
+        else
+        {
+          <ul class="dash-rows">
+            @foreach (var order in ActiveOrders.Take(5))
+            {
+              <li>
+                <a href="/orders">@(order.OperationLabel ?? order.OrderNo)</a>
+                <span class="badge @order.Status.ToLowerInvariant()">@order.Status</span>
+                <span class="dash-meta">
+                  목표 @order.TargetQty · 수량 @(order.TotalQty ?? 0) · 불량 @order.RejectQty
+                </span>
+              </li>
+            }
+          </ul>
+        }
+        <a
+          class="dash-more"
+          href="/orders"
+        >작업지시 화면으로</a>
+      </section>
+    </div>
+  </fieldset>
+</main>
+
+@code {
+    private static readonly string[] ActiveStates =
+    [
+        "RUNNING",
+        "PAUSED",
+        "RELEASED",
+        "SUBMITTED"
+    ];
+
+    private string Message = "";
+    private bool Busy;
+
+    private List<AlarmView> ActiveAlarms = [];
+    private bool MoreAlarms;
+    private bool AlarmFailed;
+
+    private List<NotificationView> Unread = [];
+    private bool MoreUnread;
+    private bool InboxFailed;
+
+    private List<OrderView> ActiveOrders = [];
+    private bool OrderFailed;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    // 세 칸을 따로 읽는다. 한 칸이 실패해도 나머지는 보여 준다.
+    private async Task LoadAsync()
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        Message = "처리 중입니다.";
+        var alarms = LoadAlarmsAsync();
+        var inbox = LoadInboxAsync();
+        var orders = LoadOrdersAsync();
+        await Task.WhenAll(alarms, inbox, orders);
+        Message = AlarmFailed || InboxFailed || OrderFailed
+            ? "일부 현황을 읽지 못했습니다."
+            : "완료했습니다.";
+        Busy = false;
+    }
+
+    private async Task LoadAlarmsAsync()
+    {
+        try
+        {
+            var page = await Api.GetAsync<PageResult<AlarmView>>(
+                "api/v1/alarms?status=ACTIVE&limit=100"
+            );
+            ActiveAlarms = page.Items.ToList();
+            MoreAlarms = page.NextCursor is not null;
+            AlarmFailed = false;
+        }
+        catch (Exception)
+        {
+            AlarmFailed = true;
+        }
+    }
+
+    private async Task LoadInboxAsync()
+    {
+        try
+        {
+            var page = await Api.GetAsync<PageResult<NotificationView>>(
+                "api/v1/inbox?limit=50&unreadOnly=true"
+            );
+            Unread = page.Items.ToList();
+            MoreUnread = page.NextCursor is not null;
+            InboxFailed = false;
+        }
+        catch (Exception)
+        {
+            InboxFailed = true;
+        }
+    }
+
+    private async Task LoadOrdersAsync()
+    {
+        try
+        {
+            var page = await Api.GetAsync<PageResult<OrderView>>("api/v1/orders?limit=25");
+            ActiveOrders = page.Items
+                .Where(x => ActiveStates.Contains(x.Status))
+                .OrderBy(x => Array.IndexOf(ActiveStates, x.Status))
+                .ToList();
+            OrderFailed = false;
+        }
+        catch (Exception)
+        {
+            OrderFailed = true;
+        }
+    }
+
+    // 위쪽 줄 색: 실패는 회색, 항목이 있으면 긴급도 색, 없으면 차분한 색.
+    private static string Tone(bool failed, int count, string busy) =>
+        failed ? "tone-muted" : count > 0 ? busy : "tone-calm";
+
+    private static string CountText(int count, int limit, bool more) =>
+        more ? $"{limit}건 이상" : $"{count}건";
+
+    // 경보에 묶인 알림은 그 경보 상세로, 아니면 알림함으로 간다.
+    private static string NoticeHref(NotificationView notice) =>
+        notice.AlarmId is null
+            ? "/inbox"
+            : $"/alarms?alarmId={Uri.EscapeDataString(notice.AlarmId)}";
+
+    private static string Kst(DateTime utc) => utc.AddHours(9).ToString("MM-dd HH:mm");
+}

@@ -1,0 +1,6 @@
+/* 공통 모양은 web/wwwroot/factorymes.css에 있다. 기준정보 화면 고유 규칙은 아직 없다. */
+
+td input:not([type="checkbox"]) {
+  width: 100%;
+  min-width: 120px;
+}

@@ -1,0 +1,116 @@
+/* 공통 모양은 web/wwwroot/factorymes.css에 있다. 여기에는 설비 분석 화면 고유 규칙만 둔다. */
+
+/* Mock이라는 사실은 화면 맨 위에서 항상 보이게 한다. */
+.mock-notice {
+  max-width: none;
+  padding: 10px 14px;
+  border-left: 4px solid var(--amber);
+  background: var(--amber-tint);
+  color: var(--ink);
+}
+
+.pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 20px;
+}
+
+.pair label {
+  flex: 1 1 240px;
+}
+
+.target-create {
+  border-top: 1px solid var(--line);
+  margin-top: 16px;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 12px 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.facts dt {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.mono {
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.error-text {
+  color: var(--red);
+}
+
+.empty-note {
+  padding: 16px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+}
+
+/* 결과 묶음: Mock임을 회색 줄로 표시해 실제 경보·판정과 섞이지 않게 한다. */
+.result {
+  margin: 16px 0;
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-left: 5px solid var(--muted);
+  border-radius: var(--radius);
+  background: var(--cool);
+}
+
+.result h4 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 0;
+}
+
+.summary {
+  font-weight: 600;
+}
+
+@media (max-width: 640px) {
+  .facts {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 로컬 AI 결과: Mock과 구분되게 청록 줄로 표시한다(경보 색은 쓰지 않는다). */
+.result-local {
+  border-left-color: var(--teal);
+}
+
+/* 모델이 만든 설명은 비신뢰 참고임을 문장 위에 늘 붙여 보인다. */
+.ai-summary {
+  padding: 8px 12px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+}
+
+.untrusted-label {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+/* 고정 규칙 점검 근거(AI 판단과 분리) */
+.maintenance {
+  margin: 12px 0;
+}
+
+.maintenance h5,
+.maintenance h6 {
+  margin: 8px 0 4px;
+}

@@ -1,0 +1,161 @@
+@page "/inbox"
+@using FactoryMES.Web.Client.Components
+@using FactoryMES.Web.Client
+@inject MesApi Api
+
+@* 공통 알림함: 로그인한 본인에게 온 알림만 보인다(서버가 범위를 정한다).
+   읽음 표시는 알림을 봤다는 기록일 뿐, 경보 확인(ACK)을 대신하지 않는다. *@
+<PageTitle>알림함 · FactoryMES</PageTitle>
+<main>
+  <header>
+    <div>
+      <p>FACTORY MES / INBOX</p>
+      <h1>알림함</h1>
+      <p>@(User is null ? "로그인 확인 중" : $"{User.Name}님의 알림")</p>
+    </div>
+  </header>
+  <p role="status">@Message</p>
+
+  @if (User is not null)
+  {
+    <fieldset disabled="@Busy">
+      <button @onclick="ReloadAsync">알림 새로고침</button>
+      <label>
+        <input
+          type="checkbox"
+          checked="@UnreadOnly"
+          @onchange="ToggleUnreadAsync"
+        />
+        읽지 않은 알림만
+      </label>
+      <p>읽음 표시를 해도 경보 확인(ACK)은 되지 않습니다. 경보 확인은 경보 화면에서 합니다.</p>
+
+      @if (Items.Count == 0)
+      {
+        <p>표시할 알림이 없습니다.</p>
+      }
+      else
+      {
+        <ul class="notifications">
+          @foreach (var item in Items)
+          {
+            <li class="@(item.ReadAt is null ? "unread" : "read")">
+              @* 제목·본문은 일반 텍스트로만 출력한다(Blazor가 HTML을 이스케이프한다). *@
+              <h2>@item.Title</h2>
+              <p>@item.Body</p>
+              <p class="meta">
+                @Kst(item.CreatedAt) ·
+                @(item.ReadAt is null ? "읽지 않음" : "읽음 " + Kst(item.ReadAt.Value))
+              </p>
+              @if (item.AlarmId is not null)
+              {
+                <a href="@($"/alarms?alarmId={Uri.EscapeDataString(item.AlarmId)}")">관련 경보 보기</a>
+              }
+              @if (item.ReadAt is null)
+              {
+                <button @onclick="() => MarkReadAsync(item.NotificationId)">읽음 표시</button>
+              }
+            </li>
+          }
+        </ul>
+      }
+      @if (Cursor is not null)
+      {
+        <button @onclick="MoreAsync">알림 더 보기</button>
+      }
+    </fieldset>
+  }
+</main>
+
+@code {
+    private SessionUser? User;
+    private string Message = "";
+    private bool Busy;
+    private bool UnreadOnly;
+    private List<NotificationView> Items = [];
+    private string? Cursor;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RunAsync(
+            async () =>
+            {
+                User = await Api.GetAsync<SessionUser>("api/v1/auth/me");
+                await LoadAsync();
+            }
+        );
+    }
+
+    private string ListPath(string? cursor) =>
+        $"api/v1/inbox?limit=50&unreadOnly={(UnreadOnly ? "true" : "false")}"
+        + (cursor is null ? "" : "&cursor=" + cursor);
+
+    private async Task LoadAsync()
+    {
+        var page = await Api.GetAsync<PageResult<NotificationView>>(ListPath(null));
+        Items = page.Items.ToList();
+        Cursor = page.NextCursor;
+    }
+
+    private Task ReloadAsync() => RunAsync(LoadAsync);
+
+    private Task ToggleUnreadAsync(ChangeEventArgs args) => RunAsync(
+        async () =>
+        {
+            UnreadOnly = args.Value is true;
+            await LoadAsync();
+        }
+    );
+
+    private Task MoreAsync() => RunAsync(
+        async () =>
+        {
+            var page = await Api.GetAsync<PageResult<NotificationView>>(ListPath(Cursor));
+            Items.AddRange(page.Items);
+            Cursor = page.NextCursor;
+        }
+    );
+
+    private Task MarkReadAsync(string notificationId) => RunAsync(
+        async () =>
+        {
+            // 같은 알림을 다시 읽음 처리해도 서버는 처음 읽은 시각을 유지한다.
+            await Api.SendAsync<AckResponse>(
+                $"api/v1/inbox/{Uri.EscapeDataString(notificationId)}/read",
+                new { },
+                put: true
+            );
+            await LoadAsync();
+        }
+    );
+
+    private async Task RunAsync(Func<Task> action)
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        Message = "처리 중입니다.";
+        try
+        {
+            await action();
+            Message = "완료했습니다.";
+        }
+        catch (HttpRequestException)
+        {
+            Message = "네트워크 오류로 결과를 확인하지 못했습니다. 새로고침해 확인해 주세요.";
+        }
+        catch (Exception error)
+        {
+            Message = error.Message;
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    private static string Kst(DateTime utc) => utc.AddHours(9).ToString("yyyy-MM-dd HH:mm:ss");
+}

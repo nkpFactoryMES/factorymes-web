@@ -1,0 +1,9 @@
+/* 공통 모양은 web/wwwroot/factorymes.css에 있다. 여기에는 일시정지·정정 영역 고유 규칙만 둔다. */
+.operations {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  margin: 16px 0;
+  background: var(--cool);
+  overflow-x: auto;
+}

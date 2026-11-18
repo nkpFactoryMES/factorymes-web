@@ -1,0 +1,1039 @@
+@page "/master-data"
+@using FactoryMES.Web.Client.Components
+@using FactoryMES.Web.Client
+@inject MesApi Api
+
+@* 기준정보(품목·라인·설비·사용자) 관리 화면.
+   관리자만 쓸 수 있고, 권한·중복·사용 중 변경 제한은 서버가 최종 판단한다. *@
+<PageTitle>기준정보 · FactoryMES</PageTitle>
+<main>
+  <header>
+    <div>
+      <p>FACTORY MES / MASTER DATA</p>
+      <h1>기준정보</h1>
+    </div>
+  </header>
+  <p role="status">@Message</p>
+
+  @if (User is not null && !Admin)
+  {
+    <p>기준정보 관리는 관리자만 사용할 수 있습니다.</p>
+  }
+
+  @if (Admin)
+  {
+    <fieldset disabled="@Busy">
+      @* 상단 도구: 전체 새로고침과 지금 탭의 등록 버튼(등록 폼은 팝업으로만 연다). *@
+      <div class="toolbar">
+        <button @onclick="ReloadAllAsync">전체 새로고침</button>
+        <button
+          type="button"
+          @onclick="OpenCreate"
+        >새 @TabLabel(Tab) 등록</button>
+      </div>
+      <div
+        class="tabs"
+        role="tablist"
+        aria-label="기준정보 종류"
+      >
+        @foreach (var tab in TabKeys)
+        {
+          <button
+            type="button"
+            role="tab"
+            aria-selected="@(Tab == tab ? "true" : "false")"
+            @onclick="() => ShowTab(tab)"
+          >@TabLabel(tab)</button>
+        }
+      </div>
+
+      @* 1. 품목: 단위는 EA로 고정이다. *@
+      @if (Tab == "product")
+      {
+        <section class="master-products">
+          <h2>품목</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>코드</th>
+                <th>이름</th>
+                <th>단위</th>
+                <th>사용</th>
+                <th>수정</th>
+              </tr>
+            </thead>
+            <tbody>
+              @foreach (var product in Products)
+              {
+                <tr>
+                  <td>@product.Code</td>
+                  <td>@product.Name</td>
+                  <td>@product.Unit</td>
+                  <td>@(product.Active ? "사용" : "중지")</td>
+                  <td>
+                    <button @onclick="() => EditProduct(product)">품목 수정</button>
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+          @if (ProductCursor is not null)
+          {
+            <button @onclick="MoreProductsAsync">품목 더 보기</button>
+          }
+
+          @if (ProductEdit is not null || Creating == "product")
+          {
+              <div
+                class="modal-backdrop"
+                @onclick="ClearProduct"
+              ></div>
+            <form
+              class="modal"
+              role="dialog"
+              aria-modal="true"
+              aria-label="@(ProductEdit is null ? "품목 등록" : "품목 수정 · " + ProductEdit.Code)"
+              @onsubmit="SaveProductAsync"
+              @onsubmit:preventDefault="true"
+              @onkeydown="args => CloseOnEscape(args, ClearProduct)"
+            >
+              <div class="modal-bar">
+                <button
+                  type="button"
+                  class="modal-close"
+                  @onclick="ClearProduct"
+                >닫기</button>
+              </div>
+              <p
+                class="modal-status"
+                role="status"
+              >@Message</p>
+              <h3>@(ProductEdit is null ? "품목 등록" : $"품목 수정 · {ProductEdit.Code}")</h3>
+              <label>
+                품목 코드
+                <input
+                  @bind="ProductCode"
+                  maxlength="40"
+                  required
+                />
+              </label>
+              <label>
+                품목 이름
+                <input
+                  @bind="ProductName"
+                  maxlength="100"
+                  required
+                />
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  @bind="ProductActive"
+                />
+                품목 사용
+              </label>
+              <button type="submit">품목 저장</button>
+              @if (ProductEdit is not null)
+              {
+                <button
+                  type="button"
+                  @onclick="ClearProduct"
+                >품목 입력 초기화</button>
+              }
+            </form>
+          }
+        </section>
+      }
+
+      @* 2. 라인 *@
+      @if (Tab == "line")
+      {
+        <section class="master-lines">
+          <h2>라인</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>코드</th>
+                <th>이름</th>
+                <th>사용</th>
+                <th>수정</th>
+              </tr>
+            </thead>
+            <tbody>
+              @foreach (var line in Lines)
+              {
+                <tr>
+                  <td>@line.Code</td>
+                  <td>@line.Name</td>
+                  <td>@(line.Active ? "사용" : "중지")</td>
+                  <td>
+                    <button @onclick="() => EditLine(line)">라인 수정</button>
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+          @if (LineCursor is not null)
+          {
+            <button @onclick="MoreLinesAsync">라인 더 보기</button>
+          }
+
+          @if (LineEdit is not null || Creating == "line")
+          {
+              <div
+                class="modal-backdrop"
+                @onclick="ClearLine"
+              ></div>
+            <form
+              class="modal"
+              role="dialog"
+              aria-modal="true"
+              aria-label="@(LineEdit is null ? "라인 등록" : "라인 수정 · " + LineEdit.Code)"
+              @onsubmit="SaveLineAsync"
+              @onsubmit:preventDefault="true"
+              @onkeydown="args => CloseOnEscape(args, ClearLine)"
+            >
+              <div class="modal-bar">
+                <button
+                  type="button"
+                  class="modal-close"
+                  @onclick="ClearLine"
+                >닫기</button>
+              </div>
+              <p
+                class="modal-status"
+                role="status"
+              >@Message</p>
+              <h3>@(LineEdit is null ? "라인 등록" : $"라인 수정 · {LineEdit.Code}")</h3>
+              <label>
+                라인 코드
+                <input
+                  @bind="LineCode"
+                  maxlength="40"
+                  required
+                />
+              </label>
+              <label>
+                라인 이름
+                <input
+                  @bind="LineName"
+                  maxlength="100"
+                  required
+                />
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  @bind="LineActive"
+                />
+                라인 사용
+              </label>
+              <button type="submit">라인 저장</button>
+              @if (LineEdit is not null)
+              {
+                <button
+                  type="button"
+                  @onclick="ClearLine"
+                >라인 입력 초기화</button>
+              }
+            </form>
+          }
+        </section>
+      }
+
+      @* 3. 설비: 소속 라인을 고른다. *@
+      @if (Tab == "equipment")
+      {
+        <section class="master-equipment">
+          <h2>설비</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>코드</th>
+                <th>이름</th>
+                <th>라인</th>
+                <th>사용</th>
+                <th>수정</th>
+              </tr>
+            </thead>
+            <tbody>
+              @foreach (var equipment in Equipment)
+              {
+                <tr>
+                  <td>@equipment.Code</td>
+                  <td>@equipment.Name</td>
+                  <td>@LineLabel(equipment.LineId)</td>
+                  <td>@(equipment.Active ? "사용" : "중지")</td>
+                  <td>
+                    <button @onclick="() => EditEquipment(equipment)">설비 수정</button>
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+          @if (EquipmentCursor is not null)
+          {
+            <button @onclick="MoreEquipmentAsync">설비 더 보기</button>
+          }
+
+          @if (EquipmentEdit is not null || Creating == "equipment")
+          {
+              <div
+                class="modal-backdrop"
+                @onclick="ClearEquipment"
+              ></div>
+            <form
+              class="modal"
+              role="dialog"
+              aria-modal="true"
+              aria-label="@(EquipmentEdit is null ? "설비 등록" : "설비 수정 · " + EquipmentEdit.Code)"
+              @onsubmit="SaveEquipmentAsync"
+              @onsubmit:preventDefault="true"
+              @onkeydown="args => CloseOnEscape(args, ClearEquipment)"
+            >
+              <div class="modal-bar">
+                <button
+                  type="button"
+                  class="modal-close"
+                  @onclick="ClearEquipment"
+                >닫기</button>
+              </div>
+              <p
+                class="modal-status"
+                role="status"
+              >@Message</p>
+              <h3>
+                @(EquipmentEdit is null ? "설비 등록" : $"설비 수정 · {EquipmentEdit.Code}")
+              </h3>
+              <label>
+                설비 코드
+                <input
+                  @bind="EquipmentCode"
+                  maxlength="40"
+                  required
+                />
+              </label>
+              <label>
+                설비 이름
+                <input
+                  @bind="EquipmentName"
+                  maxlength="100"
+                  required
+                />
+              </label>
+              <label>
+                소속 라인
+                <select
+                  @bind="EquipmentLineId"
+                  required
+                >
+                  <option value="">선택</option>
+                  @foreach (var line in Lines)
+                  {
+                    <option value="@line.LineId">@line.Name (@line.Code)</option>
+                  }
+                </select>
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  @bind="EquipmentActive"
+                />
+                설비 사용
+              </label>
+              <button type="submit">설비 저장</button>
+              @if (EquipmentEdit is not null)
+              {
+                <button
+                  type="button"
+                  @onclick="ClearEquipment"
+                >설비 입력 초기화</button>
+              }
+            </form>
+          }
+        </section>
+      }
+
+      @* 4. 사용자: 삭제하지 않고 비활성화한다. 비밀번호는 등록할 때만 입력한다. *@
+      @if (Tab == "user")
+      {
+        <section class="master-users">
+          <h2>사용자</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>로그인 ID</th>
+                <th>이름</th>
+                <th>역할</th>
+                <th>사용</th>
+                <th>수정</th>
+              </tr>
+            </thead>
+            <tbody>
+              @foreach (var user in Users)
+              {
+                <tr>
+                  <td>@user.Login</td>
+                  <td>@user.Name</td>
+                  <td>@string.Join(", ", user.Roles)</td>
+                  <td>@(user.Active ? "사용" : "중지")</td>
+                  <td>
+                    <button @onclick="() => EditUser(user)">사용자 수정</button>
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+          @if (UserCursor is not null)
+          {
+            <button @onclick="MoreUsersAsync">사용자 더 보기</button>
+          }
+
+          @if (Creating == "user")
+          {
+            <div
+              class="modal-backdrop"
+              @onclick="CloseCreateUser"
+            ></div>
+            <form
+              class="modal"
+              role="dialog"
+              aria-modal="true"
+              aria-label="사용자 등록"
+              @onsubmit="CreateUserAsync"
+              @onsubmit:preventDefault="true"
+              @onkeydown="args => CloseOnEscape(args, CloseCreateUser)"
+            >
+              <div class="modal-bar">
+                <button
+                  type="button"
+                  class="modal-close"
+                  @onclick="CloseCreateUser"
+                >닫기</button>
+              </div>
+              <p
+                class="modal-status"
+                role="status"
+              >@Message</p>
+              <h3>사용자 등록</h3>
+              <label>
+                로그인 ID
+                <input
+                  @bind="NewUserLogin"
+                  maxlength="100"
+                  autocomplete="off"
+                  required
+                />
+              </label>
+              <label>
+                사용자 이름
+                <input
+                  @bind="NewUserName"
+                  maxlength="100"
+                  required
+                />
+              </label>
+              <label>
+                역할
+                <select @bind="NewUserRole">
+                  <option value="WORKER">작업자</option>
+                  <option value="ADMIN">관리자</option>
+                </select>
+              </label>
+              <label>
+                이메일 (선택)
+                <input
+                  type="email"
+                  @bind="NewUserEmail"
+                  maxlength="254"
+                />
+              </label>
+              <label>
+                초기 비밀번호 (12자 이상)
+                <input
+                  type="password"
+                  @bind="NewUserPassword"
+                  minlength="12"
+                  maxlength="256"
+                  autocomplete="new-password"
+                  required
+                />
+              </label>
+              <button type="submit">사용자 등록</button>
+            </form>
+          }
+          else if (UserEdit is not null)
+          {
+            <div
+              class="modal-backdrop"
+              @onclick="ClearUser"
+            ></div>
+            <form
+              class="modal"
+              role="dialog"
+              aria-modal="true"
+              aria-label="@("사용자 수정 · " + UserEdit.Login)"
+              @onsubmit="UpdateUserAsync"
+              @onsubmit:preventDefault="true"
+              @onkeydown="args => CloseOnEscape(args, ClearUser)"
+            >
+              <div class="modal-bar">
+                <button
+                  type="button"
+                  class="modal-close"
+                  @onclick="ClearUser"
+                >닫기</button>
+              </div>
+              <p
+                class="modal-status"
+                role="status"
+              >@Message</p>
+              <h3>사용자 수정 · @UserEdit.Login</h3>
+              <label>
+                사용자 이름
+                <input
+                  @bind="EditUserName"
+                  maxlength="100"
+                  required
+                />
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  @bind="EditUserAdmin"
+                />
+                관리자 역할
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  @bind="EditUserWorker"
+                />
+                작업자 역할
+              </label>
+              <label>
+                이메일 (선택)
+                <input
+                  type="email"
+                  @bind="EditUserEmail"
+                  maxlength="254"
+                />
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  @bind="EditUserActive"
+                />
+                사용자 사용
+              </label>
+              <button type="submit">사용자 저장</button>
+              <button
+                type="button"
+                @onclick="ClearUser"
+              >사용자 입력 초기화</button>
+            </form>
+          }
+        </section>
+      }
+    </fieldset>
+  }
+</main>
+
+@code {
+    private SessionUser? User;
+    private bool Admin => User?.Roles.Contains("ADMIN") == true;
+    private string Message = "";
+    private bool Busy;
+
+    private List<ProductChoice> Products = [];
+    private string? ProductCursor;
+    // 탭(품목·라인·설비·사용자)과 등록 팝업 상태. Creating은 지금 열린 등록 팝업의 종류다.
+    private static readonly string[] TabKeys =
+    [
+        "product",
+        "line",
+        "equipment",
+        "user"
+    ];
+
+    private string Tab = "product";
+    private string Creating = "";
+
+    private ProductChoice? ProductEdit;
+    private string ProductCode = "";
+    private string ProductName = "";
+    private bool ProductActive = true;
+
+    private List<LineChoice> Lines = [];
+    private string? LineCursor;
+    private LineChoice? LineEdit;
+    private string LineCode = "";
+    private string LineName = "";
+    private bool LineActive = true;
+
+    private List<EquipmentChoice> Equipment = [];
+    private string? EquipmentCursor;
+    private EquipmentChoice? EquipmentEdit;
+    private string EquipmentCode = "";
+    private string EquipmentName = "";
+    private string EquipmentLineId = "";
+    private bool EquipmentActive = true;
+
+    private List<UserChoice> Users = [];
+    private string? UserCursor;
+    private UserChoice? UserEdit;
+    private string NewUserLogin = "";
+    private string NewUserName = "";
+    private string NewUserRole = "WORKER";
+    private string NewUserEmail = "";
+    private string NewUserPassword = "";
+    private string EditUserName = "";
+    private bool EditUserAdmin;
+    private bool EditUserWorker;
+    private string EditUserEmail = "";
+    private bool EditUserActive;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RunAsync(
+            async () =>
+            {
+                User = await Api.GetAsync<SessionUser>("api/v1/auth/me");
+                if (Admin)
+                {
+                    await LoadAllAsync();
+                }
+            }
+        );
+    }
+
+    private Task ReloadAllAsync() => RunAsync(LoadAllAsync);
+
+    private async Task LoadAllAsync()
+    {
+        (Products, ProductCursor) = await PageAsync<ProductChoice>("products", null);
+        (Lines, LineCursor) = await PageAsync<LineChoice>("lines", null);
+        (Equipment, EquipmentCursor) = await PageAsync<EquipmentChoice>("equipment", null);
+        (Users, UserCursor) = await PageAsync<UserChoice>("users", null);
+    }
+
+    private async Task<(List<T> Items, string? Cursor)> PageAsync<T>(string path, string? cursor)
+    {
+        var suffix = cursor is null ? "" : "&cursor=" + cursor;
+        var page = await Api.GetAsync<PageResult<T>>($"api/v1/{path}?limit=50{suffix}");
+        return (page.Items.ToList(), page.NextCursor);
+    }
+
+    private Task MoreProductsAsync() => RunAsync(
+        async () =>
+        {
+            var (items, cursor) = await PageAsync<ProductChoice>("products", ProductCursor);
+            AppendNew(Products, items, x => x.ProductId);
+            ProductCursor = cursor;
+        }
+    );
+
+    private Task MoreLinesAsync() => RunAsync(
+        async () =>
+        {
+            var (items, cursor) = await PageAsync<LineChoice>("lines", LineCursor);
+            AppendNew(Lines, items, x => x.LineId);
+            LineCursor = cursor;
+        }
+    );
+
+    private Task MoreEquipmentAsync() => RunAsync(
+        async () =>
+        {
+            var (items, cursor) = await PageAsync<EquipmentChoice>("equipment", EquipmentCursor);
+            AppendNew(Equipment, items, x => x.EquipmentId);
+            EquipmentCursor = cursor;
+        }
+    );
+
+    private Task MoreUsersAsync() => RunAsync(
+        async () =>
+        {
+            var (items, cursor) = await PageAsync<UserChoice>("users", UserCursor);
+            AppendNew(Users, items, x => x.UserId);
+            UserCursor = cursor;
+        }
+    );
+
+    // 저장한 행을 지금 목록에 바로 반영한다. 새 행은 맨 위에 두고, 수정한 행은 그 자리에서 바꾼다.
+    // 첫 페이지를 다시 읽지 않으므로, 목록이 한 페이지(50건)를 넘어도 방금 저장한 행이 보이고
+    // "더 보기"로 읽어 둔 행과 커서도 그대로 남는다.
+    private static void Merge<T>(List<T> rows, T saved, Func<T, string> id)
+    {
+        var index = rows.FindIndex(x => id(x) == id(saved));
+        if (index >= 0)
+        {
+            rows[index] = saved;
+        }
+        else
+        {
+            rows.Insert(0, saved);
+        }
+    }
+
+    // "더 보기": 이미 목록에 있는 행(등록 직후 맨 위에 넣은 행 등)은 다시 넣지 않는다.
+    private static void AppendNew<T>(List<T> rows, IEnumerable<T> page, Func<T, string> id)
+    {
+        var known = rows.Select(id).ToHashSet();
+        rows.AddRange(page.Where(x => !known.Contains(id(x))));
+    }
+
+    private string LineLabel(string lineId) =>
+        Lines.FirstOrDefault(x => x.LineId == lineId)?.Name ?? lineId;
+
+    // ---- 품목 ----
+    private void EditProduct(ProductChoice product)
+    {
+        ProductEdit = product;
+        ProductCode = product.Code;
+        ProductName = product.Name;
+        ProductActive = product.Active;
+    }
+
+    private static string TabLabel(string tab) => tab switch
+    {
+        "product" => "품목",
+        "line" => "라인",
+        "equipment" => "설비",
+        _ => "사용자"
+    };
+
+    private void ShowTab(string tab)
+    {
+        Tab = tab;
+    }
+
+    // 상단 "○○ 등록": 지금 탭의 입력을 비운 등록 팝업을 연다.
+    private void OpenCreate()
+    {
+        switch (Tab)
+        {
+            case "product":
+                ClearProduct();
+                break;
+            case "line":
+                ClearLine();
+                break;
+            case "equipment":
+                ClearEquipment();
+                break;
+            default:
+                ClearUser();
+                break;
+        }
+
+        Creating = Tab;
+    }
+
+    private void CloseCreateUser()
+    {
+        Creating = "";
+        NewUserPassword = "";
+    }
+
+    // 등록·수정 팝업에서 Esc를 누르면 닫는다.
+    private void CloseOnEscape(KeyboardEventArgs args, Action close)
+    {
+        if (args.Key == "Escape")
+        {
+            close();
+        }
+    }
+
+    private void ClearProduct()
+    {
+        Creating = "";
+        ProductEdit = null;
+        ProductCode = "";
+        ProductName = "";
+        ProductActive = true;
+    }
+
+    private Task SaveProductAsync() => RunAsync(
+        async () =>
+        {
+            ProductChoice saved;
+            if (ProductEdit is null)
+            {
+                saved = await Api.SendAsync<ProductChoice>(
+                    "api/v1/products",
+                    new ProductCreate(
+                        ProductCode.Trim(),
+                        ProductName.Trim(),
+                        "EA",
+                        ProductActive
+                    )
+                );
+            }
+            else
+            {
+                saved = await Api.SendAsync<ProductChoice>(
+                    $"api/v1/products/{ProductEdit.ProductId}",
+                    new ProductUpdate(
+                        ProductEdit.Version,
+                        ProductCode.Trim(),
+                        ProductName.Trim(),
+                        "EA",
+                        ProductActive
+                    ),
+                    put: true
+                );
+            }
+
+            ClearProduct();
+            Merge(Products, saved, x => x.ProductId);
+        },
+        async () => (Products, ProductCursor) =
+            await PageAsync<ProductChoice>("products", null)
+    );
+
+    // ---- 라인 ----
+    private void EditLine(LineChoice line)
+    {
+        LineEdit = line;
+        LineCode = line.Code;
+        LineName = line.Name;
+        LineActive = line.Active;
+    }
+
+    private void ClearLine()
+    {
+        Creating = "";
+        LineEdit = null;
+        LineCode = "";
+        LineName = "";
+        LineActive = true;
+    }
+
+    private Task SaveLineAsync() => RunAsync(
+        async () =>
+        {
+            LineChoice saved;
+            if (LineEdit is null)
+            {
+                saved = await Api.SendAsync<LineChoice>(
+                    "api/v1/lines",
+                    new LineCreate(
+                        LineCode.Trim(),
+                        LineName.Trim(),
+                        LineActive
+                    )
+                );
+            }
+            else
+            {
+                saved = await Api.SendAsync<LineChoice>(
+                    $"api/v1/lines/{LineEdit.LineId}",
+                    new LineUpdate(
+                        LineEdit.Version,
+                        LineCode.Trim(),
+                        LineName.Trim(),
+                        LineActive
+                    ),
+                    put: true
+                );
+            }
+
+            ClearLine();
+            Merge(Lines, saved, x => x.LineId);
+        },
+        async () => (Lines, LineCursor) =
+            await PageAsync<LineChoice>("lines", null)
+    );
+
+    // ---- 설비 ----
+    private void EditEquipment(EquipmentChoice equipment)
+    {
+        EquipmentEdit = equipment;
+        EquipmentCode = equipment.Code;
+        EquipmentName = equipment.Name;
+        EquipmentLineId = equipment.LineId;
+        EquipmentActive = equipment.Active;
+    }
+
+    private void ClearEquipment()
+    {
+        Creating = "";
+        EquipmentEdit = null;
+        EquipmentCode = "";
+        EquipmentName = "";
+        EquipmentLineId = "";
+        EquipmentActive = true;
+    }
+
+    private Task SaveEquipmentAsync() => RunAsync(
+        async () =>
+        {
+            EquipmentChoice saved;
+            if (EquipmentEdit is null)
+            {
+                saved = await Api.SendAsync<EquipmentChoice>(
+                    "api/v1/equipment",
+                    new EquipmentCreate(
+                        EquipmentCode.Trim(),
+                        EquipmentName.Trim(),
+                        EquipmentLineId,
+                        EquipmentActive
+                    )
+                );
+            }
+            else
+            {
+                saved = await Api.SendAsync<EquipmentChoice>(
+                    $"api/v1/equipment/{EquipmentEdit.EquipmentId}",
+                    new EquipmentUpdate(
+                        EquipmentEdit.Version,
+                        EquipmentCode.Trim(),
+                        EquipmentName.Trim(),
+                        EquipmentLineId,
+                        EquipmentActive
+                    ),
+                    put: true
+                );
+            }
+
+            ClearEquipment();
+            Merge(Equipment, saved, x => x.EquipmentId);
+        },
+        async () => (Equipment, EquipmentCursor) =
+            await PageAsync<EquipmentChoice>("equipment", null)
+    );
+
+    // ---- 사용자 ----
+    private void EditUser(UserChoice user)
+    {
+        UserEdit = user;
+        EditUserName = user.Name;
+        EditUserAdmin = user.Roles.Contains("ADMIN");
+        EditUserWorker = user.Roles.Contains("WORKER");
+        EditUserEmail = user.Email ?? "";
+        EditUserActive = user.Active;
+    }
+
+    private void ClearUser()
+    {
+        Creating = "";
+        UserEdit = null;
+        EditUserName = "";
+        EditUserAdmin = false;
+        EditUserWorker = false;
+        EditUserEmail = "";
+        EditUserActive = false;
+    }
+
+    private Task CreateUserAsync() => RunAsync(
+        async () =>
+        {
+            UserChoice saved;
+            try
+            {
+                saved = await Api.SendAsync<UserChoice>(
+                    "api/v1/users",
+                    new UserCreate(
+                        NewUserLogin.Trim(),
+                        NewUserName.Trim(),
+                        NewUserRole,
+                        string.IsNullOrWhiteSpace(NewUserEmail) ? null : NewUserEmail.Trim(),
+                        NewUserPassword
+                    )
+                );
+            }
+            finally
+            {
+                // 성공·실패와 관계없이 비밀번호 입력값을 메모리에 남기지 않는다.
+                NewUserPassword = "";
+            }
+
+            NewUserLogin = "";
+            NewUserName = "";
+            NewUserRole = "WORKER";
+            NewUserEmail = "";
+            Creating = "";
+            Merge(Users, saved, x => x.UserId);
+        },
+        async () => (Users, UserCursor) =
+            await PageAsync<UserChoice>("users", null)
+    );
+
+    private Task UpdateUserAsync() => RunAsync(
+        async () =>
+        {
+            var roles = new List<string>();
+            if (EditUserAdmin)
+            {
+                roles.Add("ADMIN");
+            }
+
+            if (EditUserWorker)
+            {
+                roles.Add("WORKER");
+            }
+
+            if (roles.Count == 0)
+            {
+                throw new InvalidOperationException("역할을 하나 이상 선택해 주세요.");
+            }
+
+            var saved = await Api.SendAsync<UserChoice>(
+                $"api/v1/users/{UserEdit!.UserId}",
+                new UserUpdate(
+                    UserEdit.Version,
+                    EditUserName.Trim(),
+                    roles.ToArray(),
+                    string.IsNullOrWhiteSpace(EditUserEmail) ? null : EditUserEmail.Trim(),
+                    EditUserActive
+                ),
+                put: true
+            );
+
+            ClearUser();
+            Merge(Users, saved, x => x.UserId);
+        },
+        async () => (Users, UserCursor) =
+            await PageAsync<UserChoice>("users", null)
+    );
+
+    // 버튼 하나의 처리. 409면 해당 목록만 다시 읽고(입력값은 그대로 둔다) 재검토를 안내한다.
+    // 통신 오류는 자동으로 다시 보내지 않는다. 저장됐는지 목록에서 확인하게 한다.
+    private async Task RunAsync(Func<Task> action, Func<Task>? reloadOnConflict = null)
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        Message = "처리 중입니다.";
+        try
+        {
+            await action();
+            Message = "완료했습니다.";
+        }
+        catch (ApiFault error) when (error.Status == 409)
+        {
+            Message = "다른 변경과 충돌했습니다(" + error.Message + "). "
+                + "목록의 최신 값을 확인하고, 수정 버튼으로 다시 불러온 뒤 저장해 주세요.";
+            if (reloadOnConflict is not null)
+            {
+                await reloadOnConflict();
+            }
+        }
+        catch (HttpRequestException)
+        {
+            Message = "네트워크 오류로 결과를 확인하지 못했습니다. 전체 새로고침으로 저장 여부를 확인해 주세요.";
+        }
+        catch (Exception error)
+        {
+            Message = error.Message;
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+}

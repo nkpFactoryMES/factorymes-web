@@ -1,0 +1,84 @@
+@page "/"
+@attribute [ExcludeFromInteractiveRouting]
+@layout FactoryMES.Web.Components.Layout.PortalLayout
+<PageTitle>FactoryMES · 업무 시작</PageTitle>
+@* 로그인 화면이자 로그인 뒤 메인 현황판.
+   session.js가 쓰는 ID(#status, #login-form, #login, #password,
+   #workspace, #workspace-title, #identity, #work-items, #logout)는 바꾸지 않는다.
+   현황판 내용(#dashboard)은 dashboard.js가 실제 API 조회로 그린다. *@
+<main class="portal">
+  <header>
+    <div>
+      <p>FACTORY MES / LOCAL</p>
+      <h1>제조 업무 포털</h1>
+      <p>계정 권한에 따라 관리자 또는 작업자 업무를 시작합니다.</p>
+    </div>
+  </header>
+  <p
+    id="status"
+    role="status"
+  >세션을 확인하고 있습니다.</p>
+  <form
+    id="login-form"
+    hidden
+  >
+    <h2>로그인</h2>
+    <label for="login">아이디</label>
+    <input
+      id="login"
+      name="login"
+      autocomplete="username"
+      maxlength="100"
+      required
+    />
+    <label for="password">비밀번호</label>
+    <input
+      id="password"
+      name="password"
+      type="password"
+      autocomplete="current-password"
+      maxlength="256"
+      required
+    />
+    <button type="submit">로그인</button>
+  </form>
+  <section
+    id="workspace"
+    hidden
+  >
+    <div class="dash-head">
+      <div>
+        <h2 id="workspace-title"></h2>
+        <p id="identity"></p>
+      </div>
+      <div class="dash-actions">
+        <button
+          id="dashboard-refresh"
+          type="button"
+        >현황 새로고침</button>
+        <button
+          id="logout"
+          type="button"
+        >로그아웃</button>
+      </div>
+    </div>
+    <nav
+      class="dash-links"
+      aria-label="업무 바로가기"
+    >
+      <ul id="work-items"></ul>
+      <p class="portal-entry">
+        <a
+          href="/orders"
+          data-enhance-nav="false"
+        >작업지시 업무 화면 열기</a>
+      </p>
+    </nav>
+    <div
+      id="dashboard"
+      class="dash-grid"
+      aria-live="polite"
+    ></div>
+  </section>
+  <noscript>로그인을 사용하려면 JavaScript를 활성화해 주세요.</noscript>
+</main>

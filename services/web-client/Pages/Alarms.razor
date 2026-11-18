@@ -1,0 +1,984 @@
+@page "/alarms"
+@using FactoryMES.Web.Client
+@using FactoryMES.Web.Client.Components
+@inject MesApi Api
+@inject NavigationManager Navigation
+
+@* 통신 끊김(COMM_LOST) 경보 화면.
+   관리자: 규칙 등록·수정, 전체 경보 조회·확인. 작업자: 담당 설비 경보 조회·확인만.
+   권한·범위·버전 판단은 서버가 최종으로 한다. *@
+<PageTitle>경보 · FactoryMES</PageTitle>
+<main>
+  <header>
+    <div>
+      <p>FACTORY MES / ALARMS</p>
+      <h1>경보</h1>
+      <p>@(User is null ? "로그인 확인 중" : $"{User.Name} · {(Admin ? "관리자" : "작업자")}")</p>
+    </div>
+  </header>
+  <p role="status">@Message</p>
+
+  @if (User is not null)
+  {
+    <fieldset disabled="@Busy">
+      @* 상단 도구와 탭: 경보 목록이 주 작업이고, 규칙 관리는 관리자 전용 별도 탭이다. *@
+      <div class="toolbar">
+        <button @onclick="ReloadAsync">경보 새로고침</button>
+        @if (Admin && Tab == "rules")
+        {
+          <button
+            type="button"
+            @onclick="OpenCreateRule"
+          >규칙 등록</button>
+        }
+      </div>
+      @if (Admin)
+      {
+        <div
+          class="tabs"
+          role="tablist"
+          aria-label="경보 화면"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected="@(Tab == "alarms" ? "true" : "false")"
+            @onclick="ShowAlarmsTab"
+          >경보 목록</button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected="@(Tab == "rules" ? "true" : "false")"
+            @onclick="ShowRulesTab"
+          >경보 규칙</button>
+        </div>
+      }
+
+      @if (Tab == "alarms")
+      {
+        <section class="alarms">
+          <h2>@(Admin ? "전체 경보" : "담당 설비 경보")</h2>
+          @if (AlarmRetry is not null && Selected is null)
+          {
+            <p class="conflict-wait">
+              충돌 뒤 최신 경보를 아직 읽지 못했습니다. 다시 조회하기 전에는 확인(ACK)을 보내지 않습니다.
+            </p>
+            <button @onclick="RetryAlarmAsync">최신 경보 다시 조회</button>
+          }
+          <label>
+            경보 상태 필터
+            <select
+              value="@StatusFilter"
+              @onchange="FilterAsync"
+            >
+              <option value="">전체</option>
+              <option value="ACTIVE">ACTIVE</option>
+              <option value="RECOVERED">RECOVERED</option>
+              <option value="CLOSED">CLOSED</option>
+            </select>
+          </label>
+          @if (AlarmRows.Count == 0)
+          {
+            <p>표시할 경보가 없습니다.</p>
+          }
+          else
+          {
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>경보</th>
+                    <th>설비</th>
+                    <th>종류·등급</th>
+                    <th>상태</th>
+                    <th>발생</th>
+                    <th>확인</th>
+                    <th>상세</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @foreach (var alarm in AlarmRows)
+                  {
+                    <tr class="state-@alarm.Status.ToLowerInvariant()">
+                      <td>#@alarm.AlarmId</td>
+                      <td>@alarm.EquipmentId</td>
+                      <td>
+                        @alarm.Kind ·
+                        <span class="badge @alarm.Severity.ToLowerInvariant()">
+                          @alarm.Severity
+                        </span>
+                      </td>
+                      <td>
+                        <span class="badge @alarm.Status.ToLowerInvariant()">@alarm.Status</span>
+                      </td>
+                      <td>@Kst(alarm.OpenedAt)</td>
+                      <td>@(alarm.AckAt is null ? "미확인" : "확인됨")</td>
+                      <td>
+                        <button @onclick="() => SelectAlarmAsync(alarm.AlarmId)">경보 상세</button>
+                      </td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          }
+          @if (AlarmCursor is not null)
+          {
+            <button @onclick="MoreAlarmsAsync">경보 더 보기</button>
+          }
+        </section>
+      }
+
+      @* 경보 상세는 목록 아래가 아니라 팝업으로 띄운다(목록을 스크롤하지 않고 바로 확인·조치). *@
+      @if (Selected is not null)
+      {
+        <div
+          class="modal-backdrop"
+          @onclick="CloseAlarm"
+        ></div>
+        <section
+          class="alarm-detail modal modal-wide"
+          role="dialog"
+          aria-modal="true"
+          aria-label="@("경보 상세 · #" + Selected.AlarmId)"
+          @onkeydown="CloseAlarmOnEscape"
+        >
+          <div class="modal-bar">
+            <button
+              type="button"
+              class="modal-close"
+              @onclick="CloseAlarm"
+            >닫기</button>
+          </div>
+          <p
+            class="modal-status"
+            role="status"
+          >@Message</p>
+          @if (AlarmRetry is not null)
+          {
+            <p class="conflict-wait">
+              충돌 뒤 최신 경보를 아직 읽지 못했습니다. 다시 조회하기 전에는 확인(ACK)을 보내지 않습니다.
+            </p>
+            <button @onclick="RetryAlarmAsync">최신 경보 다시 조회</button>
+          }
+          <h2>경보 상세 · #@Selected.AlarmId</h2>
+          <ul>
+            <li>상태: @Selected.Status</li>
+            <li>종류·등급: @Selected.Kind · @Selected.Severity</li>
+            <li>설비: @Selected.EquipmentId · 규칙 #@Selected.RuleId</li>
+            <li>발생: @Kst(Selected.OpenedAt)</li>
+            <li>복구: @(Selected.RecoveredAt is null ? "-" : Kst(Selected.RecoveredAt.Value))</li>
+            <li>
+              확인(ACK):
+              @(Selected.AckAt is null
+                ? "아직 확인하지 않음"
+                : $"사용자 #{Selected.AckBy} · {Kst(Selected.AckAt.Value)}")
+            </li>
+            <li>
+              종결:
+              @(Selected.ClosedAt is null
+                ? "-"
+                : $"{Kst(Selected.ClosedAt.Value)} · {Selected.CloseKind}")
+            </li>
+            @if (Selected.CloseReason is not null)
+            {
+              <li>종결 사유: @Selected.CloseReason</li>
+            }
+          </ul>
+          <p>
+            경보 확인(ACK)은 "이 경보를 보고 인지했다"는 기록입니다. 알림함의 읽음 표시와는 별개이며,
+            확인해도 경보가 복구되거나 종결되지는 않습니다.
+          </p>
+          @if (Selected.AckAt is null && Selected.Status != "CLOSED")
+          {
+            <button
+              @onclick="AckAsync"
+              disabled="@(AlarmRetry is not null)"
+            >경보 확인(ACK)</button>
+          }
+
+          <AlarmActions
+            @key="Selected.AlarmId"
+            Alarm="Selected"
+            IsAdmin="Admin"
+            CurrentUserId="@User.UserId"
+            Blocked="@(AlarmRetry is not null)"
+            Changed="AlarmChangedAsync"
+          />
+        </section>
+      }
+      @if (Admin && Tab == "rules")
+      {
+        <section class="rules">
+          <h2>경보 규칙 설정</h2>
+          <p class="hint">
+            통신 끊김(COMM_LOST): 유효 데이터가 연결 설정의 만료 시간(staleSec)보다 오래 끊기면 경보를 엽니다.
+            상한(HIGH): 수치가 발생 임계값 이상으로 정한 시간 동안 이어지면 열고,
+            복구 임계값 이하로 정한 시간 동안 이어지면 복구합니다.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>연결</th>
+                <th>설비</th>
+                <th>종류</th>
+                <th>조건</th>
+                <th>등급</th>
+                <th>사용</th>
+                <th>억제</th>
+                <th>수정</th>
+              </tr>
+            </thead>
+            <tbody>
+              @foreach (var rule in Rules)
+              {
+                <tr>
+                  <td>@TargetLabel(rule.TargetId)</td>
+                  <td>@rule.EquipmentId</td>
+                  <td>@KindLabel(rule.Kind)</td>
+                  <td>@Condition(rule)</td>
+                  <td>
+                    <span class="badge @rule.Severity.ToLowerInvariant()">@rule.Severity</span>
+                  </td>
+                  <td>@(rule.Enabled ? "사용" : "중지")</td>
+                  <td>
+                    @(rule.SuppressUntil is null
+                      ? "-"
+                      : Kst(rule.SuppressUntil.Value) + "까지")
+                  </td>
+                  <td>
+                    <button @onclick="() => EditRuleAsync(rule.RuleId)">규칙 수정</button>
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+          @if (RuleCursor is not null)
+          {
+            <button @onclick="MoreRulesAsync">규칙 더 보기</button>
+          }
+
+          @* 규칙 등록·수정은 상단 "규칙 등록" 버튼이나 행의 "규칙 수정"으로 여는 팝업이다. *@
+          @if (RuleEdit is not null || CreatingRule)
+          {
+            <div
+              class="modal-backdrop"
+              @onclick="ClearRule"
+            ></div>
+            <form
+              class="modal rule-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-label="@RuleDialogLabel"
+              @onsubmit="SaveRuleAsync"
+              @onsubmit:preventDefault="true"
+              @onkeydown="CloseRuleOnEscape"
+            >
+              <div class="modal-bar">
+                <button
+                  type="button"
+                  class="modal-close"
+                  @onclick="ClearRule"
+                >닫기</button>
+              </div>
+              <p
+                class="modal-status"
+                role="status"
+              >@Message</p>
+              <h3>@(RuleEdit is null ? "규칙 등록" : $"규칙 수정 · {TargetLabel(RuleEdit.TargetId)}")</h3>
+              @if (RuleEdit is not null)
+              {
+                <p class="rule-server">
+                  서버 값(버전 @RuleEdit.Version): 등급 @RuleEdit.Severity ·
+                  @(RuleEdit.Enabled ? "사용" : "중지") · @KindLabel(RuleEdit.Kind) @Condition(RuleEdit)
+                </p>
+              }
+              @if (RuleRetry is not null)
+              {
+                <p class="conflict-wait">
+                  충돌 뒤 최신 규칙을 아직 읽지 못했습니다. 다시 조회하기 전에는 저장하지 않습니다.
+                </p>
+                <button
+                  type="button"
+                  @onclick="RetryRuleAsync"
+                >최신 규칙 다시 조회</button>
+              }
+              @if (RuleEdit is null)
+              {
+                <label>
+                  감시할 연결 대상
+                  <select
+                    @bind="RuleTargetId"
+                    required
+                  >
+                    <option value="">선택</option>
+                    @foreach (var target in Targets)
+                    {
+                      <option value="@target.TargetId">
+                        @target.DisplayName (@target.TargetId) @(target.Enabled ? "" : "· 수집 중지")
+                      </option>
+                    }
+                  </select>
+                </label>
+                <label>
+                  경보 종류
+                  <select @bind="RuleKind">
+                    <option value="COMM_LOST">통신 끊김(COMM_LOST)</option>
+                    <option value="HIGH">상한 초과(HIGH)</option>
+                  </select>
+                </label>
+              }
+              else
+              {
+                <p>경보 종류: @KindLabel(RuleEdit.Kind) (연결·종류는 바꿀 수 없습니다)</p>
+              }
+
+              @if (EditingKind == "HIGH")
+              {
+                <div class="high-fields">
+                  <label>
+                    수치 매핑
+                    <select @bind="RuleMappingId">
+                      <option value="">선택</option>
+                      @foreach (var mapping in NumericMappings())
+                      {
+                        <option value="@mapping.MappingId">
+                          @MappingLabel(mapping)
+                        </option>
+                      }
+                    </select>
+                  </label>
+                  @if (NumericMappings().Count == 0)
+                  {
+                    <p class="hint">
+                      이 연결에 사용 중인 수치 매핑이 없습니다. 설비 연결 화면에서 수치 매핑을 저장한 뒤 등록해 주세요.
+                    </p>
+                  }
+                  <div class="threshold-pair">
+                    <label>
+                      발생 임계값(이상)
+                      <input
+                        @bind="RuleTrigger"
+                        inputmode="decimal"
+                        placeholder="예: 25.5"
+                      />
+                    </label>
+                    <label>
+                      발생 유지 시간(초)
+                      <input
+                        @bind="RuleHold"
+                        inputmode="numeric"
+                        placeholder="0~3600"
+                      />
+                    </label>
+                  </div>
+                  <div class="threshold-pair">
+                    <label>
+                      복구 임계값(이하)
+                      <input
+                        @bind="RuleClear"
+                        inputmode="decimal"
+                        placeholder="예: 25.3"
+                      />
+                    </label>
+                    <label>
+                      복구 유지 시간(초)
+                      <input
+                        @bind="RuleClearHold"
+                        inputmode="numeric"
+                        placeholder="0~3600"
+                      />
+                    </label>
+                  </div>
+                  <p class="hint">
+                    복구 임계값은 발생 임계값보다 작아야 합니다. 두 값 사이에서는 경보 상태가 그대로 유지됩니다.
+                    경보가 발생 중(ACTIVE)일 때는 매핑·임계값·유지 시간을 바꿀 수 없습니다.
+                  </p>
+                </div>
+              }
+              <label>
+                경보 등급
+                <select @bind="RuleSeverity">
+                  <option value="INFO">INFO</option>
+                  <option value="WARN">WARN</option>
+                  <option value="CRITICAL">CRITICAL</option>
+                </select>
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  @bind="RuleEnabled"
+                />
+                규칙 사용
+              </label>
+              <button
+                type="submit"
+                disabled="@(RuleRetry is not null)"
+              >규칙 저장</button>
+              @if (RuleEdit is not null)
+              {
+                <button
+                  type="button"
+                  @onclick="ClearRule"
+                >규칙 입력 초기화</button>
+              }
+            </form>
+          }
+        </section>
+      }
+    </fieldset>
+  }
+</main>
+
+@code {
+    private SessionUser? User;
+    private bool Admin => User?.Roles.Contains("ADMIN") == true;
+    private string Message = "";
+    private bool Busy;
+
+    private List<TargetView> Targets = [];
+    private List<RuleView> Rules = [];
+    private string? RuleCursor;
+    private RuleView? RuleEdit;
+    private string RuleTargetId = "";
+    private string RuleSeverity = "WARN";
+    private bool RuleEnabled = true;
+
+    // HIGH 규칙 입력. 서버로는 trim한 문자열을 그대로 보낸다(소수 12자리.6자리).
+    private string RuleKind = "COMM_LOST";
+    private string RuleMappingId = "";
+    private string RuleTrigger = "";
+    private string RuleClear = "";
+    private string RuleHold = "";
+    private string RuleClearHold = "";
+
+    private string EditingKind => RuleEdit?.Kind ?? RuleKind;
+
+    private List<AlarmView> AlarmRows = [];
+    private string? AlarmCursor;
+    private string StatusFilter = "";
+    private AlarmView? Selected;
+
+    // 관리자 화면의 탭(경보 목록 / 경보 규칙)과 규칙 등록 팝업 상태.
+    private string Tab = "alarms";
+
+    private string RuleDialogLabel => RuleEdit is null
+        ? "규칙 등록"
+        : "규칙 수정 · " + TargetLabel(RuleEdit.TargetId);
+    private bool CreatingRule;
+
+    // 409 뒤 최신 값 재조회가 실패하면 여기에 재시도 동작을 남긴다.
+    // 값이 있는 동안에는 해당 저장·ACK를 보내지 않는다.
+    private Func<Task>? RuleRetry;
+    private Func<Task>? AlarmRetry;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RunAsync(
+            async () =>
+            {
+                User = await Api.GetAsync<SessionUser>("api/v1/auth/me");
+                await LoadAllAsync();
+
+                // 알림함의 "관련 경보 보기" 링크(/alarms?alarmId=ID)로 들어오면 그 경보를 연다.
+                var query = new Uri(Navigation.Uri).Query.TrimStart('?').Split('&');
+                var alarmId = query
+                    .Select(x => x.Split('=', 2))
+                    .FirstOrDefault(x => x.Length == 2 && x[0] == "alarmId")?[1];
+                if (!string.IsNullOrEmpty(alarmId))
+                {
+                    await LoadAlarmAsync(Uri.UnescapeDataString(alarmId));
+                }
+            }
+        );
+    }
+
+    private Task ReloadAsync() => RunAsync(
+        async () =>
+        {
+            await LoadAllAsync();
+            if (Selected is not null)
+            {
+                await LoadAlarmAsync(Selected.AlarmId);
+            }
+
+            // 목록과 선택 경보를 모두 새로 읽었으므로 경보 쪽 재조회 대기는 풀린다.
+            AlarmRetry = null;
+        }
+    );
+
+    private async Task LoadAllAsync()
+    {
+        if (Admin)
+        {
+            Targets = await AllAsync<TargetView>("api/v1/integration-targets?limit=100");
+            Targets = Targets.Where(x => x.Kind == "EQUIPMENT" && !x.Deleted).ToList();
+            (Rules, RuleCursor) = await PageAsync<RuleView>("api/v1/alarm-rules?limit=50", null);
+        }
+
+        (AlarmRows, AlarmCursor) = await PageAsync<AlarmView>(AlarmPath(), null);
+    }
+
+    private string AlarmPath() =>
+        "api/v1/alarms?limit=50" + (StatusFilter == "" ? "" : "&status=" + StatusFilter);
+
+    private async Task<(List<T> Items, string? Cursor)> PageAsync<T>(string path, string? cursor)
+    {
+        var suffix = cursor is null ? "" : "&cursor=" + cursor;
+        var page = await Api.GetAsync<PageResult<T>>(path + suffix);
+        return (page.Items.ToList(), page.NextCursor);
+    }
+
+    private async Task<List<T>> AllAsync<T>(string path)
+    {
+        var items = new List<T>();
+        string? cursor = null;
+        do
+        {
+            var (page, next) = await PageAsync<T>(path, cursor);
+            items.AddRange(page);
+            cursor = next;
+        }
+        while (cursor is not null);
+
+        return items;
+    }
+
+    private Task MoreRulesAsync() => RunAsync(
+        async () =>
+        {
+            var (items, cursor) = await PageAsync<RuleView>(
+                "api/v1/alarm-rules?limit=50",
+                RuleCursor
+            );
+            Rules.AddRange(items);
+            RuleCursor = cursor;
+        }
+    );
+
+    private Task MoreAlarmsAsync() => RunAsync(
+        async () =>
+        {
+            var (items, cursor) = await PageAsync<AlarmView>(AlarmPath(), AlarmCursor);
+            AlarmRows.AddRange(items);
+            AlarmCursor = cursor;
+        }
+    );
+
+    private Task FilterAsync(ChangeEventArgs args) => RunAsync(
+        async () =>
+        {
+            StatusFilter = args.Value?.ToString() ?? "";
+            (AlarmRows, AlarmCursor) = await PageAsync<AlarmView>(AlarmPath(), null);
+        }
+    );
+
+    private string TargetLabel(string targetId) =>
+        Targets.FirstOrDefault(x => x.TargetId == targetId) is { } target
+            ? $"{target.DisplayName} ({target.TargetId})"
+            : targetId;
+
+    // ---- 규칙(관리자) ----
+    private Task EditRuleAsync(string ruleId) => RunAsync(
+        async () =>
+        {
+            // 수정 전에 최신 값을 다시 읽어 그 버전을 기준으로 저장한다.
+            var rule = await Api.GetAsync<RuleView>("api/v1/alarm-rules/" + ruleId);
+            RuleEdit = rule;
+            RuleSeverity = rule.Severity;
+            RuleEnabled = rule.Enabled;
+            RuleKind = rule.Kind;
+            RuleMappingId = rule.MappingId ?? "";
+            RuleTrigger = rule.TriggerHigh ?? "";
+            RuleClear = rule.ClearBelow ?? "";
+            RuleHold = rule.HoldSec?.ToString() ?? "";
+            RuleClearHold = rule.ClearHoldSec?.ToString() ?? "";
+            RuleRetry = null;
+        }
+    );
+
+    private void CloseRuleOnEscape(KeyboardEventArgs args)
+    {
+        if (args.Key == "Escape" && (RuleEdit is not null || CreatingRule))
+        {
+            ClearRule();
+        }
+    }
+
+    private void CloseAlarm()
+    {
+        Selected = null;
+    }
+
+    private void CloseAlarmOnEscape(KeyboardEventArgs args)
+    {
+        if (args.Key == "Escape")
+        {
+            CloseAlarm();
+        }
+    }
+
+    private void ShowAlarmsTab()
+    {
+        Tab = "alarms";
+    }
+
+    private void ShowRulesTab()
+    {
+        Tab = "rules";
+    }
+
+    // 상단 "규칙 등록": 입력을 비운 새 등록 팝업을 연다.
+    private void OpenCreateRule()
+    {
+        ClearRule();
+        CreatingRule = true;
+    }
+
+    private void ClearRule()
+    {
+        // 재조회 대기 중이면 수정 대상 없이 목록만 다시 읽도록 바꾼다.
+        if (RuleRetry is not null)
+        {
+            RuleRetry = () => ReloadRuleAfterConflictAsync(null);
+        }
+
+        RuleEdit = null;
+        CreatingRule = false;
+        RuleTargetId = "";
+        RuleSeverity = "WARN";
+        RuleEnabled = true;
+        RuleKind = "COMM_LOST";
+        RuleMappingId = "";
+        RuleTrigger = "";
+        RuleClear = "";
+        RuleHold = "";
+        RuleClearHold = "";
+    }
+
+    private Task SaveRuleAsync()
+    {
+        // 충돌 시 다시 읽을 규칙은 보내기 전에 정해 둔다.
+        var editId = RuleEdit?.RuleId;
+
+        return RunAsync(
+            SendRuleAsync,
+            reloadOnConflict: () => ReloadRuleAfterConflictAsync(editId)
+        );
+    }
+
+    private async Task SendRuleAsync()
+    {
+        if (RuleRetry is not null)
+        {
+            throw new InvalidOperationException("최신 규칙을 먼저 다시 조회해 주세요.");
+        }
+
+        if (RuleEdit is null)
+        {
+            var target = Targets.FirstOrDefault(x => x.TargetId == RuleTargetId)
+                ?? throw new InvalidOperationException("감시할 연결 대상을 선택해 주세요.");
+            if (target.EquipmentId is null)
+            {
+                throw new InvalidOperationException("설비가 연결된 대상만 선택할 수 있습니다.");
+            }
+
+            var high = HighFields(RuleKind);
+            await Api.SendAsync<RuleView>(
+                "api/v1/alarm-rules",
+                new RuleWrite(
+                    target.EquipmentId,
+                    target.TargetId,
+                    high.MappingId,
+                    RuleKind,
+                    RuleSeverity,
+                    high.Trigger,
+                    high.Clear,
+                    high.Hold,
+                    high.ClearHold,
+                    RuleEnabled
+                )
+            );
+        }
+        else
+        {
+            // 대상·설비·종류는 바꿀 수 없어 원본 값을 그대로 보낸다.
+            // 등급·사용 여부와 HIGH의 매핑·임계값·유지 시간은 입력값을 보낸다(ACTIVE 중 HIGH 조건 변경은 서버 409).
+            var high = HighFields(RuleEdit.Kind);
+            await Api.SendAsync<RuleView>(
+                "api/v1/alarm-rules/" + RuleEdit.RuleId,
+                new RuleUpdate(
+                    RuleEdit.Version,
+                    RuleEdit.EquipmentId,
+                    RuleEdit.TargetId,
+                    high.MappingId,
+                    RuleEdit.Kind,
+                    RuleSeverity,
+                    high.Trigger,
+                    high.Clear,
+                    high.Hold,
+                    high.ClearHold,
+                    RuleEnabled
+                ),
+                put: true
+            );
+        }
+
+        ClearRule();
+        (Rules, RuleCursor) = await PageAsync<RuleView>("api/v1/alarm-rules?limit=50", null);
+    }
+
+    // 409 뒤: 규칙 원본(최신 버전)과 목록을 모두 읽은 뒤에만 화면에 반영한다.
+    // 사용자가 고른 등급·사용 여부 입력은 그대로 두고, 서버 값과 비교해 직접 다시 저장하게 한다.
+    private async Task ReloadRuleAfterConflictAsync(string? ruleId)
+    {
+        RuleRetry = () => ReloadRuleAfterConflictAsync(ruleId);
+
+        var latest = ruleId is null
+            ? null
+            : await Api.GetAsync<RuleView>("api/v1/alarm-rules/" + ruleId);
+        var (rules, cursor) = await PageAsync<RuleView>("api/v1/alarm-rules?limit=50", null);
+
+        if (latest is not null)
+        {
+            RuleEdit = latest;
+        }
+
+        (Rules, RuleCursor) = (rules, cursor);
+        RuleRetry = null;
+    }
+
+    private Task RetryRuleAsync() => RunAsync(
+        () => RuleRetry?.Invoke() ?? Task.CompletedTask,
+        done: "최신 규칙을 다시 읽었습니다. 서버 값과 입력을 확인한 뒤 저장해 주세요."
+    );
+
+    // ---- HIGH 규칙 입력 ----
+    private static string KindLabel(string kind) => kind switch
+    {
+        "COMM_LOST" => "통신 끊김",
+        "HIGH" => "상한 초과",
+        _ => kind
+    };
+
+    private string Condition(RuleView rule) => rule.Kind == "HIGH"
+        ? $"{MetricLabel(rule.TargetId, rule.MappingId)} ≥ {rule.TriggerHigh} "
+            + $"({rule.HoldSec}초 유지) · 복구 ≤ {rule.ClearBelow} ({rule.ClearHoldSec}초 유지)"
+        : "데이터 끊김 > 만료 시간";
+
+    private static string MappingLabel(MappingInput mapping) =>
+        $"{mapping.MetricCode} ({mapping.SourcePath}"
+        + (mapping.Unit is null ? "" : ", " + mapping.Unit)
+        + ")";
+
+    private string MetricLabel(string targetId, string? mappingId) =>
+        Targets.FirstOrDefault(x => x.TargetId == targetId)
+            ?.Config.Content.Settings.Mappings
+            .FirstOrDefault(x => x.MappingId == mappingId)
+            ?.MetricCode
+        ?? "매핑 #" + mappingId;
+
+    // 선택한 연결 설정에서 사용 중인 수치(NUMBER·COUNTER) 매핑만 고를 수 있다.
+    private List<MappingInput> NumericMappings()
+    {
+        var targetId = RuleEdit?.TargetId ?? RuleTargetId;
+        var target = Targets.FirstOrDefault(x => x.TargetId == targetId);
+        if (target is null)
+        {
+            return [];
+        }
+
+        return target.Config.Content.Settings.Mappings
+            .Where(x => x.Enabled && x.MappingId is not null)
+            .Where(x => x.ValueKind is "NUMBER" or "COUNTER")
+            .ToList();
+    }
+
+    private (string? MappingId, string? Trigger, string? Clear, long? Hold, long? ClearHold)
+        HighFields(string kind)
+    {
+        if (kind != "HIGH")
+        {
+            return (null, null, null, null, null);
+        }
+
+        if (string.IsNullOrEmpty(RuleMappingId))
+        {
+            throw new InvalidOperationException("수치 매핑을 선택해 주세요.");
+        }
+
+        var trigger = DecimalText(RuleTrigger, "발생 임계값");
+        var clear = DecimalText(RuleClear, "복구 임계값");
+        if (clear.Value >= trigger.Value)
+        {
+            throw new InvalidOperationException("복구 임계값은 발생 임계값보다 작아야 합니다.");
+        }
+
+        return (
+            RuleMappingId,
+            trigger.Text,
+            clear.Text,
+            Seconds(RuleHold, "발생 유지 시간"),
+            Seconds(RuleClearHold, "복구 유지 시간")
+        );
+    }
+
+    // 서버와 같은 공통 형식 검사(CollectionFormat.TryDecimal)를 쓴다.
+    // 앞자리 0(예: 025.5)·유니코드 숫자는 거절하고, 정수 12자리·소수 6자리까지 허용한다.
+    private static (string Text, decimal Value) DecimalText(string value, string label)
+    {
+        var text = value.Trim();
+        if (!CollectionFormat.TryDecimal(text, out var number))
+        {
+            throw new InvalidOperationException(
+                label + "은 정수 12자리, 소수 6자리 이내 숫자로 입력해 주세요(예: 26.0, 앞자리 0 없이)."
+            );
+        }
+
+        return (text, number);
+    }
+
+    private static long Seconds(string value, string label)
+    {
+        if (!long.TryParse(value.Trim(), out var seconds) || seconds is < 0 or > 3600)
+        {
+            throw new InvalidOperationException(label + "은 0~3600초로 입력해 주세요.");
+        }
+
+        return seconds;
+    }
+
+    // ---- 경보 조회·확인 ----
+    private Task SelectAlarmAsync(string alarmId) => RunAsync(
+        async () =>
+        {
+            await LoadAlarmAsync(alarmId);
+
+            // 새로 고른 경보는 방금 읽은 최신 값이다.
+            AlarmRetry = null;
+        }
+    );
+
+    private async Task LoadAlarmAsync(string alarmId)
+    {
+        try
+        {
+            var path = "api/v1/alarms/" + Uri.EscapeDataString(alarmId);
+            Selected = await Api.GetAsync<AlarmView>(path);
+        }
+        catch (ApiFault error) when (error.Status == 404)
+        {
+            Selected = null;
+            throw new InvalidOperationException("해당 경보를 찾을 수 없거나 볼 수 있는 범위가 아닙니다.");
+        }
+    }
+
+    private Task AckAsync()
+    {
+        var alarmId = Selected!.AlarmId;
+        var version = Selected.Version;
+
+        return RunAsync(
+            async () =>
+            {
+                if (AlarmRetry is not null)
+                {
+                    throw new InvalidOperationException("최신 경보를 먼저 다시 조회해 주세요.");
+                }
+
+                Selected = await Api.SendAsync<AlarmView>(
+                    $"api/v1/alarms/{alarmId}/ack",
+                    new Command(version)
+                );
+                (AlarmRows, AlarmCursor) = await PageAsync<AlarmView>(AlarmPath(), null);
+            },
+            reloadOnConflict: () => ReloadAlarmAfterConflictAsync(alarmId)
+        );
+    }
+
+    // 409 뒤: 경보 최신 값과 목록을 다시 읽는다. 실패하면 재시도 버튼을 남긴다.
+    private async Task ReloadAlarmAfterConflictAsync(string alarmId)
+    {
+        AlarmRetry = () => ReloadAlarmAfterConflictAsync(alarmId);
+
+        await LoadAlarmAsync(alarmId);
+        (AlarmRows, AlarmCursor) = await PageAsync<AlarmView>(AlarmPath(), null);
+
+        AlarmRetry = null;
+    }
+
+    // 조치·종결 화면에서 변경(또는 409)이 있으면 경보 상세·목록을 다시 읽는다.
+    // 실패하면 AlarmRetry가 남아 ACK·조치 변경이 막히고 재조회 버튼이 보인다.
+    private Task AlarmChangedAsync()
+    {
+        var alarmId = Selected!.AlarmId;
+
+        return RunAsync(
+            () => ReloadAlarmAfterConflictAsync(alarmId),
+            done: "경보를 다시 읽었습니다."
+        );
+    }
+
+    private Task RetryAlarmAsync() => RunAsync(
+        () => AlarmRetry?.Invoke() ?? Task.CompletedTask,
+        done: "최신 경보를 다시 읽었습니다. 상태를 확인한 뒤 진행해 주세요."
+    );
+
+    // 버튼 하나의 처리. 409는 입력을 지키고 최신 값을 다시 읽어 재검토를 안내한다.
+    // 통신 오류·5xx는 자동으로 다시 보내지 않는다(등록이 이미 됐을 수 있음).
+    private async Task RunAsync(
+        Func<Task> action,
+        Func<Task>? reloadOnConflict = null,
+        string done = "완료했습니다."
+    )
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        Message = "처리 중입니다.";
+        try
+        {
+            await action();
+            Message = done;
+        }
+        catch (ApiFault error) when (error.Status == 409)
+        {
+            Message = "다른 변경과 충돌했습니다(" + error.Message + "). 최신 값을 확인한 뒤 다시 시도해 주세요.";
+            if (reloadOnConflict is not null)
+            {
+                // 재조회 실패도 여기서 잡아 화면 예외로 번지지 않게 한다.
+                // 재시도 동작은 재조회 함수가 남겨 두었으므로 버튼으로 다시 읽을 수 있다.
+                try
+                {
+                    await reloadOnConflict();
+                }
+                catch (Exception)
+                {
+                    Message = "다른 변경과 충돌했고, 최신 값도 읽지 못했습니다. "
+                        + "'다시 조회' 버튼으로 최신 값을 읽은 뒤 진행해 주세요.";
+                }
+            }
+        }
+        catch (ApiFault error) when (error.Status >= 500)
+        {
+            Message = "서버 응답을 확인하지 못했습니다. 다시 보내기 전에 새로고침해 결과를 확인해 주세요.";
+        }
+        catch (HttpRequestException)
+        {
+            Message = "네트워크 오류로 결과를 확인하지 못했습니다. 새로고침해 결과를 확인해 주세요.";
+        }
+        catch (Exception error)
+        {
+            Message = error.Message;
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    private static string Kst(DateTime utc) => utc.AddHours(9).ToString("yyyy-MM-dd HH:mm:ss");
+}

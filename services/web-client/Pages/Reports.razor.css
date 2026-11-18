@@ -1,0 +1,138 @@
+/* 공통 모양은 web/wwwroot/factorymes.css에 있다. 여기에는 생산 통계 화면 고유 규칙만 둔다. */
+
+.query-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 4px 12px;
+}
+
+.query-bar label {
+  margin: 0;
+}
+
+.query-bar input {
+  width: 200px;
+}
+
+/* 집계 상태: 왼쪽 줄 색과 배지 글자로 미집계·완료·대기·실패를 구분한다. */
+.report-status {
+  border-left-width: 5px;
+}
+
+.report-status.state-none {
+  border-left-color: var(--muted);
+}
+
+.report-status.state-ok {
+  border-left-color: var(--teal);
+}
+
+.report-status.state-running {
+  border-left-color: var(--amber);
+}
+
+.report-status.state-failed {
+  border-left-color: var(--red);
+}
+
+.state-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-weight: 600;
+}
+
+.run-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 8px 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.run-facts dt {
+  color: var(--muted);
+}
+
+.run-facts dd {
+  margin: 0;
+}
+
+.run-error {
+  color: var(--red);
+  overflow-wrap: anywhere;
+}
+
+.empty-note {
+  padding: 16px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+  text-align: center;
+}
+
+th.num,
+td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+tfoot th,
+tfoot td {
+  border-top: 2px solid var(--line);
+  font-weight: 700;
+}
+
+/* 비교 막대: 양품(Teal)과 불량(Red)을 이어 붙인다. 글자 값은 왼쪽 열에 항상 있다. */
+.bar {
+  display: flex;
+  width: 220px;
+  min-width: 120px;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--line-soft);
+  overflow: hidden;
+}
+
+.bar-good {
+  background: var(--teal);
+}
+
+.bar-reject {
+  background: var(--red);
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.legend li {
+  margin: 0;
+}
+
+.swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 4px;
+  border-radius: 2px;
+  vertical-align: -1px;
+}
+
+.swatch.good {
+  background: var(--teal);
+}
+
+.swatch.reject {
+  background: var(--red);
+}

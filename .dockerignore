@@ -1,0 +1,16 @@
+# 이미지 빌드에 쓰지 않는 파일. .packages는 restore에 필요하므로 제외하지 않는다.
+**/bin/
+**/obj/
+.git/
+.github/
+.nuget/
+.vs/
+.idea/
+.vscode/
+.env
+.secrets/
+docs/
+*.md
+
+artifacts/
+verification-results/

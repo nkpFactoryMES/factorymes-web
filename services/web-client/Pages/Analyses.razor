@@ -1,0 +1,924 @@
+@page "/analyses"
+@using FactoryMES.Web.Client
+@using FactoryMES.Web.Client.Components
+@inject MesApi Api
+
+@* 설비 상태 분석(관리자 전용). 공급자는 고정 설정 두 가지뿐이다(임의 주소·키·모델 입력 없음).
+   - MOCK: 입력 수치를 요약만 한다. 위험도는 항상 UNKNOWN, MockFlag true.
+   - LOCAL: 로컬 GPU 모델(qwen2.5:1.5b)이 설명 문장만 만든다. 위험도와 유지보전 근거는 AI가 아니라
+     고정 시연 규칙(demo-temperature-v1)이 계산하고 Backend가 다시 계산해 확인한다.
+   어느 쪽도 자동 유지보전 경보·제어·실발송을 만들지 않고, 채택(Accepted)은 항상 false다. *@
+<PageTitle>설비 분석 · FactoryMES</PageTitle>
+<main>
+  <header>
+    <div>
+      <p>FACTORY MES / ANALYSES</p>
+      <h1>설비 분석(Mock·로컬 AI)</h1>
+      <p>@(User is null ? "로그인 확인 중" : $"{User.Name} · {(Admin ? "관리자" : "작업자")}")</p>
+    </div>
+  </header>
+  <p role="status">@Message</p>
+
+  @if (User is not null && !Admin)
+  {
+    <p>설비 분석은 관리자만 사용할 수 있습니다.</p>
+  }
+
+  @if (Admin)
+  {
+    <fieldset disabled="@Busy">
+      <p class="mock-notice">
+        Mock 분석은 실제 AI 예측이 아니고 위험도를 판정하지 않습니다(항상 UNKNOWN).
+        로컬 AI 분석은 이 PC의 GPU 모델이 설명 문장만 만들며, 위험도와 점검 근거는 고정 시연 규칙이
+        계산합니다(고장 예측 아님). 어느 쪽도 유지보전 경보·설비 제어를 만들지 않고, 클라우드 호출은 없습니다.
+      </p>
+
+      @* 상단 도구: 분석 요청과 대상 등록은 팝업으로 연다. *@
+      <div class="toolbar">
+        <button
+          type="button"
+          @onclick="OpenRequestForm"
+        >새 분석 요청</button>
+        <button
+          type="button"
+          @onclick="OpenTargetForm"
+        >대상 등록</button>
+      </div>
+      <div
+        class="tabs"
+        role="tablist"
+        aria-label="분석 화면"
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected="@(Tab == "jobs" ? "true" : "false")"
+          @onclick="ShowJobsTab"
+        >분석 이력</button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected="@(Tab == "targets" ? "true" : "false")"
+          @onclick="ShowTargetsTab"
+        >분석 대상</button>
+      </div>
+
+      @if (Tab == "targets")
+      {
+        @* 1. 분석 대상(MOCK·LOCAL) *@
+        <section class="ai-targets">
+          <h2>분석 대상</h2>
+          @if (Targets.Length == 0)
+          {
+            <p>등록된 분석 대상이 없습니다. 상단 "대상 등록"에서 먼저 등록해 주세요.</p>
+          }
+          else
+          {
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>대상</th>
+                    <th>제공자·모델</th>
+                    <th>설정 버전</th>
+                    <th>사용</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @foreach (var target in Targets)
+                  {
+                    var content = target.Configuration.Content;
+                    <tr>
+                      <td>@target.DisplayName (@target.TargetId)</td>
+                      <td>@content.Settings.ProviderKind · @(content.Settings.Model ?? "-")</td>
+                      <td>v@(content.ConfigVersion)</td>
+                      <td>@(target.Enabled ? "사용" : "중지")</td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          }
+        </section>
+      }
+
+
+      @if (Tab == "jobs")
+      {
+        @* 3. 분석 이력 *@
+        <section class="analysis-jobs">
+          <h2>분석 이력</h2>
+          <button @onclick="ReloadJobsAsync">분석 이력 새로고침</button>
+          @if (Jobs.Count == 0)
+          {
+            <p>표시할 분석 이력이 없습니다.</p>
+          }
+          else
+          {
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>작업</th>
+                    <th>대상·종류</th>
+                    <th>상태</th>
+                    <th>설비·기간(한국 시간)</th>
+                    <th>관측 비율</th>
+                    <th>결과</th>
+                    <th>상세</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @foreach (var job in Jobs)
+                  {
+                    <tr>
+                      <td>#@job.JobId · @(job.Attempt)회</td>
+                      <td>@job.TargetId · @job.Operation</td>
+                      <td>
+                        <span class="badge @StateBadge(job.State)">@job.State</span>
+                      </td>
+                      <td>
+                        @if (job.Snapshot is { } snapshot)
+                        {
+                          @($"{EquipmentLabel(snapshot.EquipmentId)} · "
+                            + $"{Kst(snapshot.PeriodStart)} ~ {Kst(snapshot.PeriodEnd)}")
+                        }
+                        else
+                        {
+                          @("-")
+                        }
+                      </td>
+                      <td>@(job.Snapshot?.Coverage ?? "-")</td>
+                      <td>@ResultCount(job)</td>
+                      <td>
+                        <button @onclick="() => OpenJobAsync(job.JobId)">분석 상세</button>
+                      </td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          }
+          @if (JobCursor is not null)
+          {
+            <button @onclick="MoreJobsAsync">분석 이력 더 보기</button>
+          }
+        </section>
+      }
+
+      @if (RequestFormOpen)
+      {
+        <div
+          class="modal-backdrop"
+          @onclick="CloseRequestForm"
+        ></div>
+        @* 2. 분석 요청 *@
+        <section
+          class="analysis-request modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="새 분석 요청"
+          @onkeydown="CloseOnEscape"
+        >
+          <div class="modal-bar">
+            <button
+              type="button"
+              class="modal-close"
+              @onclick="CloseRequestForm"
+            >닫기</button>
+          </div>
+          <p
+            class="modal-status"
+            role="status"
+          >@Message</p>
+          <h2>분석 요청</h2>
+          <form
+            @onsubmit="RequestAsync"
+            @onsubmit:preventDefault="true"
+          >
+            <div class="pair">
+              <label>
+                분석할 설비
+                <select @bind="EquipmentId">
+                  <option value="">선택</option>
+                  @foreach (var item in Equipment)
+                  {
+                    <option value="@item.EquipmentId">@item.Name (@item.Code)</option>
+                  }
+                </select>
+              </label>
+              <label>
+                분석 대상
+                <select @bind="TargetId">
+                  <option value="">선택</option>
+                  @foreach (var target in Targets.Where(x => x.Enabled))
+                  {
+                    <option value="@target.TargetId">@target.DisplayName (@target.TargetId)</option>
+                  }
+                </select>
+              </label>
+            </div>
+            <div class="pair">
+              <label>
+                시작(한국 시간)
+                <input
+                  type="datetime-local"
+                  value="@StartLocal"
+                  @onchange="SetStart"
+                />
+              </label>
+              <label>
+                끝(한국 시간)
+                <input
+                  type="datetime-local"
+                  value="@EndLocal"
+                  @onchange="SetEnd"
+                />
+              </label>
+            </div>
+            <p class="hint">
+              기간은 서버 시각 기준 과거, 1분 이상 24시간 이하입니다.
+              화면은 한국 시간이고 서버에는 UTC로 보냅니다. 기본값은 서버 시각 기준 최근 5분입니다.
+              기간 중 측정이 있는 1분 칸이 10% 미만이거나 측정이 2건 미만이면 데이터 부족으로 분석하지 않습니다.
+            </p>
+            <p class="hint aggregation-note">
+              분석 입력은 Oracle에서 1분 단위로 미리 집계한 값입니다(원시 측정 행을 자르거나 표본을 뽑지 않음).
+              24시간 동안 1초마다 수집한 자료도 그대로 집계하며, 기간 최대 24시간·지표 50종류 제한은 유지됩니다.
+            </p>
+            <label>
+              분석 종류
+              <select @bind="Kind">
+                <option value="TREND_SUMMARY">TREND_SUMMARY · 추세 요약</option>
+                <option value="MAINTENANCE_RISK">MAINTENANCE_RISK · 점검 참고(위험도 판정 없음)</option>
+              </select>
+            </label>
+            @if (PendingRequest is not null)
+            {
+              <p class="conflict-wait">
+                이전 분석 요청의 결과를 확인하지 못했습니다.
+                새 요청은 만들지 않고 같은 요청(같은 요청 ID)으로만 다시 보냅니다.
+              </p>
+              <button type="submit">같은 요청 다시 보내기</button>
+            }
+            else
+            {
+              <button type="submit">분석 요청</button>
+            }
+          </form>
+        </section>
+      }
+
+      @if (TargetFormOpen)
+      {
+        <div
+          class="modal-backdrop"
+          @onclick="CloseTargetForm"
+        ></div>
+        <form
+          class="target-create modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="분석 대상 등록"
+          @onkeydown="CloseOnEscape"
+          @onsubmit="CreateTargetAsync"
+          @onsubmit:preventDefault="true"
+        >
+          <div class="modal-bar">
+            <button
+              type="button"
+              class="modal-close"
+              @onclick="CloseTargetForm"
+            >닫기</button>
+          </div>
+          <p
+            class="modal-status"
+            role="status"
+          >@Message</p>
+          <h3>분석 대상 등록</h3>
+          <label>
+            공급자
+            <select @bind="NewProvider">
+              <option value="MOCK">MOCK · 모의 결과(mock-trend-v1)</option>
+              <option value="LOCAL">LOCAL · 로컬 GPU 모델(@LocalAiPolicy.Model)</option>
+            </select>
+          </label>
+          <div class="pair">
+            <label>
+              대상 ID
+              <input
+                @bind="NewTargetId"
+                maxlength="64"
+                placeholder="예: AI-MOCK-01"
+              />
+            </label>
+            <label>
+              대상 이름
+              <input
+                @bind="NewTargetName"
+                maxlength="100"
+              />
+            </label>
+          </div>
+          @if (NewProvider == "LOCAL")
+          {
+            <p class="hint">
+              로컬 GPU 모델 @LocalAiPolicy.Model 고정입니다(내부 주소 local-ai, 제한 120초).
+              주소·모델·자격 증명은 받지 않습니다. 실행에 1~2분이 걸릴 수 있습니다.
+            </p>
+            <button type="submit">로컬 AI 대상 등록</button>
+          }
+          else
+          {
+            <p class="hint">Mock 전용 대상입니다. 주소·자격 증명은 받지 않습니다(모델 mock-trend-v1).</p>
+            <button type="submit">Mock 대상 등록</button>
+          }
+        </form>
+      }
+
+      @* 상세 팝업 *@
+      @if (Selected is not null)
+      {
+        <div
+          class="modal-backdrop"
+          @onclick="CloseJob"
+        ></div>
+        <section
+          class="modal modal-wide analysis-detail"
+          role="dialog"
+          aria-modal="true"
+          aria-label="@("분석 상세 · #" + Selected.JobId)"
+          @onkeydown="CloseOnEscape"
+        >
+          <div class="modal-bar">
+            <button
+              type="button"
+              @onclick="RefreshJobAsync"
+            >상세 새로고침</button>
+            <button
+              type="button"
+              class="modal-close"
+              @onclick="CloseJob"
+            >닫기</button>
+          </div>
+          <p
+            class="modal-status"
+            role="status"
+          >@Message</p>
+          <h3>분석 상세 · #@Selected.JobId</h3>
+          <dl class="facts">
+            <dt>상태</dt>
+            <dd>
+              <span class="badge @StateBadge(Selected.State)">@Selected.State</span>
+              @StateHint(Selected.State)
+            </dd>
+            @if (Selected.ErrorCode is not null)
+            {
+              <dt>오류</dt>
+              <dd class="error-text">
+                @Selected.ErrorCode · @ErrorMeaning(Selected.ErrorCode)
+                @(Selected.Error is null || Selected.Error == Selected.ErrorCode
+                  ? ""
+                  : "· " + Selected.Error)
+              </dd>
+            }
+            <dt>대상·종류</dt>
+            <dd>@Selected.TargetId · @Selected.Operation · 설정 v@(Selected.ConfigVersion)</dd>
+            <dt>요청 ID</dt>
+            <dd class="mono">@Selected.RequestId</dd>
+            <dt>처리 기한</dt>
+            <dd>@Kst(Selected.Deadline) · @(Selected.Attempt)회차 · 버전 @Selected.Version</dd>
+            <dt>추적 ID</dt>
+            <dd class="mono">@Selected.CorrelationId</dd>
+            @if (Selected.Snapshot is { } snap)
+            {
+              <dt>입력 고정본</dt>
+              <dd>
+                #@snap.SnapshotId · @EquipmentLabel(snap.EquipmentId) ·
+                @Kst(snap.PeriodStart) ~ @Kst(snap.PeriodEnd) · 입력 v@(snap.InputVersion)
+              </dd>
+              <dt>관측 비율</dt>
+              <dd>
+                @snap.Coverage
+                <span class="hint">(요청 기간 1분 칸 중 측정이 있는 칸의 비율. 가동률·신뢰도가 아님)</span>
+              </dd>
+              <dt>입력 해시</dt>
+              <dd class="mono">@snap.InputHash</dd>
+            }
+          </dl>
+
+          @if (Selected.Results.Length == 0)
+          {
+            <p class="empty-note">아직 결과가 없습니다. 처리 상태를 확인하고 잠시 뒤 새로고침해 주세요.</p>
+          }
+          @foreach (var result in Selected.Results)
+          {
+            var maintenance = result.Evidence.Maintenance;
+            <article class="result @(result.MockFlag ? null : "result-local")">
+              <h4>
+                결과 #@result.ResultId · @(result.Attempt)회차
+                @if (result.MockFlag)
+                {
+                  <span class="badge closed">MOCK</span>
+                  <span class="badge info">위험도 @(result.Risk) · 판정 안 함</span>
+                }
+                else
+                {
+                  <span class="badge info">LOCAL AI</span>
+                  <span class="badge @RiskBadge(result.Risk)">
+                    위험도 @(result.Risk) · 시연 규칙 판정
+                  </span>
+                }
+                <span class="badge closed">@(result.Accepted ? "채택됨" : "참고용 · 채택 안 함")</span>
+              </h4>
+              @if (result.MockFlag)
+              {
+                <p class="summary">@result.Evidence.Summary</p>
+              }
+              else
+              {
+                @* 모델이 만든 문장이다. 사실 확인 전에는 믿지 않도록 표시한다. *@
+                <div class="ai-summary">
+                  <p class="untrusted-label">AI 설명 · 비신뢰 참고(담당자 검토 필요)</p>
+                  <p class="summary">@result.Evidence.Summary</p>
+                </div>
+              }
+              @if (maintenance is not null)
+              {
+                <section class="maintenance">
+                  <h5>
+                    유지보전 점검 근거 · 규칙 @maintenance.PolicyVersion
+                    (AI가 아닌 고정 시연 규칙, 고장 예측 아님)
+                  </h5>
+                  <p>규칙 위험도 @maintenance.Risk</p>
+                  <h6>근거</h6>
+                  <ul>
+                    @foreach (var item in maintenance.Findings)
+                    {
+                      <li>@item</li>
+                    }
+                  </ul>
+                  <h6>점검 안내</h6>
+                  <ul>
+                    @foreach (var item in maintenance.Actions)
+                    {
+                      <li>@item</li>
+                    }
+                  </ul>
+                </section>
+              }
+              @if (maintenance is null && result.Evidence.Observations.Length > 0)
+              {
+                <h5>관찰(입력 수치 요약)</h5>
+                <ul>
+                  @foreach (var item in result.Evidence.Observations)
+                  {
+                    <li>@item</li>
+                  }
+                </ul>
+              }
+              @if (maintenance is null && result.Evidence.Recommendations.Length > 0)
+              {
+                <h5>안내</h5>
+                <ul>
+                  @foreach (var item in result.Evidence.Recommendations)
+                  {
+                    <li>@item</li>
+                  }
+                </ul>
+              }
+              <dl class="facts">
+                <dt>제공자·모델</dt>
+                <dd>@result.Provider · @(result.Model ?? "-") · 결과 v@(result.ResultVersion)</dd>
+                <dt>Mock 여부</dt>
+                <dd>@(result.MockFlag ? "Mock(모의 결과)" : "아니오 · 로컬 GPU 모델 실행 결과")</dd>
+                <dt>입력 기간</dt>
+                <dd>
+                  @Kst(result.InputPeriodStart) ~ @Kst(result.InputPeriodEnd)
+                  · 관측 비율 @result.DataCoverage
+                </dd>
+                <dt>완료 시각</dt>
+                <dd>@Kst(result.CompletedAt)</dd>
+                <dt>근거 해시</dt>
+                <dd class="mono">입력 @result.Evidence.InputHash · 설정 @result.Evidence.ConfigHash</dd>
+              </dl>
+            </article>
+          }
+        </section>
+      }
+    </fieldset>
+  }
+</main>
+
+@code {
+    private SessionUser? User;
+    private bool Admin => User?.Roles.Contains("ADMIN") == true;
+    private string Message = "";
+    private bool Busy;
+
+    // 탭(분석 이력이 주 작업)과 팝업 상태.
+    private string Tab = "jobs";
+    private bool RequestFormOpen;
+    private bool TargetFormOpen;
+
+    private void ShowJobsTab()
+    {
+        Tab = "jobs";
+    }
+
+    private void ShowTargetsTab()
+    {
+        Tab = "targets";
+    }
+
+    private void OpenRequestForm()
+    {
+        RequestFormOpen = true;
+    }
+
+    // 결과를 모르는 요청이 남아 있어도 닫을 수 있다. 다시 열면 같은 요청 재전송만 보인다.
+    private void CloseRequestForm()
+    {
+        RequestFormOpen = false;
+    }
+
+    private void OpenTargetForm()
+    {
+        TargetFormOpen = true;
+    }
+
+    private void CloseTargetForm()
+    {
+        TargetFormOpen = false;
+    }
+
+    private DateTime ServerTime;
+    private AiTargetView[] Targets = [];
+    private List<EquipmentChoice> Equipment = [];
+
+    private string NewTargetId = "";
+    private string NewTargetName = "";
+
+    // 등록할 공급자: MOCK 또는 LOCAL(고정 설정만, 주소·키·모델은 받지 않는다).
+    private string NewProvider = "MOCK";
+
+    private string EquipmentId = "";
+    private string TargetId = "";
+    private string StartLocal = "";
+    private string EndLocal = "";
+    private string Kind = "TREND_SUMMARY";
+
+    // 결과를 확인하지 못한 요청. 같은 요청 ID·내용으로만 다시 보내고 새 요청은 막는다.
+    private AnalysisRequest? PendingRequest;
+
+    private List<AnalysisJobView> Jobs = [];
+    private string? JobCursor;
+    private AnalysisJobView? Selected;
+
+    private const string LocalFormat = "yyyy-MM-ddTHH:mm";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RunAsync(
+            async () =>
+            {
+                User = await Api.GetAsync<SessionUser>("api/v1/auth/me");
+                if (!Admin)
+                {
+                    return;
+                }
+
+                await LoadOptionsAsync(resetPeriod: true);
+                Equipment = await AllAsync<EquipmentChoice>(
+                    "api/v1/equipment?active=true&limit=100"
+                );
+                await LoadJobsAsync(null);
+            }
+        );
+    }
+
+    // 대상 목록과 서버 시각. 기본 기간은 서버 시각 기준 최근 5분(한국 시간으로 표시).
+    // 새로 연결한 설비도 바로 관측 비율을 채울 수 있게 짧게 잡는다(서버 기준은 그대로).
+    private async Task LoadOptionsAsync(bool resetPeriod)
+    {
+        var options = await Api.GetAsync<AnalysisOptions>("api/v1/analysis-options");
+        ServerTime = options.ServerTime;
+        Targets = options.Targets;
+        if (resetPeriod)
+        {
+            var end = ServerTime.AddHours(9);
+            // 시간 구분자가 문화권 설정에 따라 바뀌지 않도록 고정 문화권으로 만든다.
+            var invariant = System.Globalization.CultureInfo.InvariantCulture;
+            EndLocal = end.ToString(LocalFormat, invariant);
+            StartLocal = end.AddMinutes(-5).ToString(LocalFormat, invariant);
+        }
+    }
+
+    private async Task<List<T>> AllAsync<T>(string path)
+    {
+        var items = new List<T>();
+        string? cursor = null;
+        do
+        {
+            var suffix = cursor is null ? "" : "&cursor=" + Uri.EscapeDataString(cursor);
+            var page = await Api.GetAsync<PageResult<T>>(path + suffix);
+            items.AddRange(page.Items);
+            cursor = page.NextCursor;
+        }
+        while (cursor is not null);
+
+        return items;
+    }
+
+    private string EquipmentLabel(string id) =>
+        Equipment.FirstOrDefault(x => x.EquipmentId == id) is { } item
+            ? $"{item.Name} ({item.Code})"
+            : "설비 #" + id;
+
+    // ---- 분석 대상 등록(MOCK·LOCAL) ----
+    private async Task CreateTargetAsync()
+    {
+        var local = NewProvider == "LOCAL";
+        await RunAsync(
+            async () =>
+            {
+                var id = NewTargetId.Trim();
+                var name = NewTargetName.Trim();
+                if (id.Length == 0 || name.Length == 0)
+                {
+                    throw new InvalidOperationException("대상 ID와 대상 이름을 입력해 주세요.");
+                }
+
+                await Api.SendAsync<AiTargetView>(
+                    "api/v1/ai-targets",
+                    new MockAiTargetCreate(id, name, local ? "LOCAL" : "MOCK")
+                );
+                NewTargetId = "";
+                NewTargetName = "";
+                NewProvider = "MOCK";
+                TargetFormOpen = false;
+                await LoadOptionsAsync(resetPeriod: false);
+                TargetId = id;
+            },
+            done: local ? "로컬 AI 분석 대상을 등록했습니다." : "Mock 분석 대상을 등록했습니다."
+        );
+    }
+
+    // ---- 분석 요청 ----
+    private async Task RequestAsync()
+    {
+        var listFailed = false;
+        await RunAsync(
+            async () =>
+            {
+                var request = PendingRequest ?? BuildRequest();
+                PendingRequest = request;
+                var job = await Api.SendAsync<AnalysisJobView>("api/v1/analyses", request);
+                PendingRequest = null;
+
+                // 접수된 작업을 먼저 보여 준다. 그 뒤 목록 조회가 실패해도 접수 실패로 보이지 않게 한다.
+                Selected = job;
+                RequestFormOpen = false;
+                try
+                {
+                    await LoadJobsAsync(null);
+                }
+                catch (Exception error) when (error is ApiFault or HttpRequestException)
+                {
+                    listFailed = true;
+                }
+            },
+            done: "분석을 요청했습니다. 처리 상태는 상세에서 새로고침해 확인해 주세요."
+        );
+
+        if (listFailed)
+        {
+            Message = "분석 요청은 접수됐지만 분석 이력 목록을 읽지 못했습니다. "
+                + "'분석 이력 새로고침'으로 다시 읽어 주세요.";
+        }
+    }
+
+    private void SetStart(ChangeEventArgs args)
+    {
+        StartLocal = args.Value?.ToString() ?? "";
+    }
+
+    private void SetEnd(ChangeEventArgs args)
+    {
+        EndLocal = args.Value?.ToString() ?? "";
+    }
+
+    // 한국 시간 입력을 UTC로 바꾸고 규격 범위를 먼저 확인한다(최종 판단은 서버).
+    private AnalysisRequest BuildRequest()
+    {
+        if (EquipmentId == "" || TargetId == "")
+        {
+            throw new InvalidOperationException("분석할 설비와 분석 대상을 선택해 주세요.");
+        }
+
+        var start = ParseLocal(StartLocal, "시작");
+        var end = ParseLocal(EndLocal, "끝");
+        var span = end - start;
+        if (span < TimeSpan.FromMinutes(1) || span > TimeSpan.FromHours(24))
+        {
+            throw new InvalidOperationException("기간은 1분 이상 24시간 이하로 골라 주세요.");
+        }
+
+        if (ServerTime != default && end > ServerTime.AddMinutes(1))
+        {
+            throw new InvalidOperationException("끝 시각은 서버 현재 시각 이전이어야 합니다.");
+        }
+
+        return new AnalysisRequest(
+            Guid.NewGuid().ToString(),
+            EquipmentId,
+            TargetId,
+            start,
+            end,
+            Kind
+        );
+    }
+
+    // datetime-local 값은 브라우저·입력 방식에 따라 초나 밀리초가 붙을 수 있다(예: 18:57, 18:57:00,
+    // 18:57:00.000). 모두 받되, 서버 규칙(소수 6자리 이하)에 맞게 초 단위로 맞춘다.
+    private static readonly string[] LocalFormats =
+    [
+        "yyyy-MM-ddTHH:mm",
+        "yyyy-MM-ddTHH:mm:ss",
+        "yyyy-MM-ddTHH:mm:ss.FFFFFFF",
+        "yyyy-MM-dd HH:mm",
+        "yyyy-MM-dd HH:mm:ss"
+    ];
+
+    private static DateTime ParseLocal(string value, string label)
+    {
+        var text = value.Trim();
+        if (!DateTime.TryParseExact(
+            text,
+            LocalFormats,
+            System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.None,
+            out var local
+        ))
+        {
+            // 받은 원문을 함께 보여 줘 형식 문제를 바로 알 수 있게 한다.
+            throw new InvalidOperationException(
+                $"{label} 시각을 확인해 주세요(받은 값: \"{text}\")."
+            );
+        }
+
+        // 화면 값은 한국 시간(UTC+9)이다. 초 미만은 버린다.
+        var seconds = new DateTime(local.Ticks - local.Ticks % TimeSpan.TicksPerSecond);
+        return DateTime.SpecifyKind(seconds.AddHours(-9), DateTimeKind.Utc);
+    }
+
+    // ---- 분석 이력·상세 ----
+    private async Task LoadJobsAsync(string? cursor)
+    {
+        var suffix = cursor is null ? "" : "&cursor=" + Uri.EscapeDataString(cursor);
+        var page = await Api.GetAsync<PageResult<AnalysisJobView>>(
+            "api/v1/analyses?limit=50" + suffix
+        );
+        if (cursor is null)
+        {
+            Jobs = page.Items.ToList();
+        }
+        else
+        {
+            Jobs.AddRange(page.Items);
+        }
+
+        JobCursor = page.NextCursor;
+    }
+
+    private Task ReloadJobsAsync() => RunAsync(() => LoadJobsAsync(null));
+
+    private Task MoreJobsAsync() => RunAsync(() => LoadJobsAsync(JobCursor));
+
+    private Task OpenJobAsync(string jobId) => RunAsync(
+        async () =>
+        {
+            Selected = await Api.GetAsync<AnalysisJobView>(
+                "api/v1/analyses/" + Uri.EscapeDataString(jobId)
+            );
+        }
+    );
+
+    private Task RefreshJobAsync() => OpenJobAsync(Selected!.JobId);
+
+    private void CloseJob()
+    {
+        Selected = null;
+    }
+
+    private void CloseOnEscape(KeyboardEventArgs args)
+    {
+        if (args.Key == "Escape")
+        {
+            CloseJob();
+            CloseRequestForm();
+            CloseTargetForm();
+        }
+    }
+
+    private static string StateBadge(string state) => state switch
+    {
+        "SUCCEEDED" or "COMPLETED" => "recovered",
+        "FAILED" or "TIMED_OUT" => "critical",
+        "QUEUED" or "DISPATCHED" or "RUNNING" => "warn",
+        _ => "closed"
+    };
+
+    // 서버 오류 코드는 그대로 보여 주고 뜻을 덧붙인다.
+    private static string ErrorMeaning(string code) => code switch
+    {
+        // 사전 집계 도입 전에 남은 실패 기록이다. 기록은 지우지 않고 당시 이유를 그대로 설명한다.
+        "ANALYSIS_INPUT_LIMIT" =>
+            "사전 집계 도입 전 원시 자료 10000개 상한에 걸린 예전 기록입니다. "
+                + "지금 요청은 1분 사전 집계로 처리해 원시 행 상한이 없습니다.",
+        "ANALYSIS_SCHEDULE_REJECTED" => "예약 분석 요청이 입력 검사에서 거절됐습니다.",
+        "ANALYSIS_INPUT_CHANGED" => "분석 입력이나 설정이 요청 뒤 바뀌어 실행하지 않았습니다.",
+        "ANALYSIS_RESULT_REJECTED" => "분석 결과가 입력·설정·점검 규칙과 맞지 않아 저장하지 않았습니다.",
+        "ANALYSIS_TRANSPORT_FAILED" =>
+            "분석기(Mock·로컬 AI)까지 전달하지 못했거나 제한 시간 안에 응답이 없었습니다(자동 재시도 없음).",
+        "ANALYSIS_PROVIDER_REJECTED" =>
+            "분석기가 요청을 거절했습니다(설정·입력·로컬 모델 상태 확인). Mock으로 대체하지 않습니다.",
+        "ANALYSIS_INPUT_UNAVAILABLE" => "분석 입력을 읽지 못해 실행하지 않았습니다.",
+        "ANALYSIS_DEADLINE_EXPIRED" => "처리 기한을 넘겼습니다(자동 재시도 없음).",
+        _ => "알 수 없는 오류 코드입니다."
+    };
+
+    private static string StateHint(string state) => state switch
+    {
+        "QUEUED" => "처리 대기 중입니다.",
+        "DISPATCHED" => "분석기로 보냈습니다. 결과를 기다리는 중입니다(로컬 AI는 최대 2분).",
+        "TIMED_OUT" => "처리 기한을 넘겼습니다. 자동으로 다시 시도하지 않습니다.",
+        "INSUFFICIENT_DATA" => "데이터가 부족해 분석하지 않았습니다(결과 없음).",
+        "FAILED" => "처리에 실패했습니다. 오류를 확인해 주세요.",
+        _ => ""
+    };
+
+    // 버튼 하나의 처리. 5xx·통신 오류는 자동 재전송하지 않고 같은 요청만 다시 보낼 수 있게 남긴다.
+    // 서버가 요청을 거절(4xx)하면 같은 요청 재전송을 그만둔다(입력은 유지).
+    private async Task RunAsync(Func<Task> action, string done = "완료했습니다.")
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        Message = "처리 중입니다.";
+        try
+        {
+            await action();
+            Message = done;
+        }
+        catch (ApiFault error) when (error.Status >= 500)
+        {
+            Message = "서버 응답을 확인하지 못했습니다. 다시 보내기 전에 새로고침해 결과를 확인해 주세요.";
+        }
+        catch (HttpRequestException)
+        {
+            Message = "네트워크 오류로 결과를 확인하지 못했습니다. 새로고침해 결과를 확인해 주세요.";
+        }
+        catch (ApiFault error)
+        {
+            Message = error.Message + $" ({error.Status})";
+            if (error.Status is not 408 and not 429)
+            {
+                PendingRequest = null;
+            }
+        }
+        catch (InvalidOperationException error)
+        {
+            Message = error.Message;
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    // 분석 이력 표의 결과 칸: 공급자(Mock·로컬 AI)와 건수.
+    private static string ResultCount(AnalysisJobView job)
+    {
+        if (job.Results.Length == 0)
+        {
+            return "없음";
+        }
+
+        var kind = job.Results.All(x => x.MockFlag) ? "Mock" : "로컬 AI";
+        return $"{kind} {job.Results.Length}건";
+    }
+
+    // 시연 규칙 위험도 표시 색. 경보가 아니라 참고 표시다.
+    private static string RiskBadge(string risk) => risk switch
+    {
+        "HIGH" => "critical",
+        "MEDIUM" => "warn",
+        "LOW" => "recovered",
+        _ => "closed"
+    };
+
+    private static string Kst(DateTime utc) => utc.AddHours(9).ToString("yyyy-MM-dd HH:mm:ss");
+}

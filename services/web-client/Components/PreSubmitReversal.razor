@@ -1,0 +1,319 @@
+@using FactoryMES.Web.Client
+@inject MesApi Api
+
+@* 제출 전(RUNNING·PAUSED) 담당 작업자가 자기 실적을 취소(역분개)하는 화면.
+   원장은 지우지 않고, 원본과 같은 수량의 REVERSAL 기록을 추가한다. 최종 판단은 서버가 한다. *@
+@if (ShowForm || Pending is not null)
+{
+  <section class="pre-submit-reversal">
+    <h3>제출 전 실적 취소</h3>
+    <p role="status">@Message</p>
+
+    @if (Pending is not null)
+    {
+      @* 응답을 확인하지 못한 요청: 원래 작업으로, 같은 UUID·본문 그대로만 다시 보낸다. *@
+      <div class="pending">
+        <p>
+          작업 @PendingOrderId 의 취소 요청 결과를 확인하지 못했습니다.
+          같은 요청을 다시 보내 결과를 확인해 주세요. 새 요청은 만들지 않습니다.
+        </p>
+        <button
+          type="button"
+          disabled="@Busy"
+          @onclick="ResendAsync"
+        >같은 취소 요청 재전송·결과 확인</button>
+      </div>
+    }
+
+    @if (ShowForm)
+    {
+      <p>
+        취소해도 기존 실적은 지워지지 않습니다. 같은 수량의 취소(역분개) 기록이 추가되고,
+        합계에서 빠집니다. 본인이 입력한 실적만 한 번씩 취소할 수 있습니다.
+      </p>
+
+      <fieldset disabled="@(Busy || Pending is not null)">
+        @if (Candidates.Count == 0)
+        {
+          <p>취소할 수 있는 실적이 없습니다.</p>
+        }
+        else
+        {
+          <ul class="candidates">
+            @foreach (var entry in Candidates)
+            {
+              <li>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked="@Selected.Contains(entry.EntryId)"
+                    @onchange="args => Toggle(entry.EntryId, args)"
+                  />
+                  @entry.Kind @entry.Qty EA · @Kst(entry.OccurredAt) · #@entry.EntryId
+                  @(string.IsNullOrWhiteSpace(entry.Reason) ? "" : " · " + entry.Reason)
+                </label>
+              </li>
+            }
+          </ul>
+
+          <label>
+            취소 사유
+            <input
+              @bind="Reason"
+              maxlength="1000"
+            />
+          </label>
+          <button
+            type="button"
+            @onclick="CancelSelectedAsync"
+          >선택 실적 취소</button>
+        }
+      </fieldset>
+    }
+  </section>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public OrderView Order { get; set; } = default!;
+
+    [Parameter]
+    public bool IsWorker { get; set; }
+
+    [Parameter]
+    public string CurrentUserId { get; set; } = "";
+
+    [Parameter]
+    public EventCallback Changed { get; set; }
+
+    // 전송·재조회 중임을 부모에 알린다. 부모는 그동안 상세 탭과 다른 작업 열기를 막는다.
+    [Parameter]
+    public EventCallback<bool> BusyChanged { get; set; }
+
+    // 탭/작업이 바뀌어도 미확인 요청 안내를 부모가 항상 보이게 한다.
+    [Parameter]
+    public EventCallback<bool> PendingChanged { get; set; }
+
+    private const int MaxBatch = 50;
+
+    private string Message = "";
+    private bool Busy;
+
+    private List<EntryView> Entries = [];
+    private readonly HashSet<string> Selected = [];
+    private string Reason = "";
+    private string? LoadedKey;
+
+    // 응답을 확인하지 못한 요청. 원래 작업으로만, 같은 UUID·본문으로만 다시 보낸다.
+    private EntryBatch? Pending;
+    private string? PendingOrderId;
+
+    private bool ShowForm => IsWorker
+        && Order.AssigneeId == CurrentUserId
+        && Order.Status is "RUNNING" or "PAUSED";
+
+    // 지금 보고 있는 작업에서, 본인이 입력한 정정 아닌 TOTAL·REJECT 원본 중
+    // 아직 취소되지 않은 것만 대상이다(이전 작업의 원장이 남아 있어도 섞이지 않게 OrderId도 본다).
+    // 설비 자동(Source=AUTO) 실적은 시스템 원장이라 취소 대상에서 뺀다(서버도 거절한다).
+    private List<EntryView> Candidates => Entries
+        .Where(x => x.OrderId == Order.OrderId)
+        .Where(x => x.Source != "AUTO")
+        .Where(x => x.Kind is "TOTAL" or "REJECT")
+        .Where(x => x.RecordedBy == CurrentUserId && x.CorrectionId is null)
+        .Where(x => !Entries.Any(r => r.Kind == "REVERSAL" && r.ReversalOf == x.EntryId))
+        .OrderBy(x => x.OccurredAt)
+        .ToList();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!ShowForm)
+        {
+            return;
+        }
+
+        // 작업·버전·상태가 바뀌면 원장을 다시 읽는다. 읽기에 성공했을 때만 기록해,
+        // 실패하면 같은 버전으로 새로고침해도 다시 시도한다.
+        var key = CurrentKey;
+        if (key == LoadedKey)
+        {
+            return;
+        }
+
+        try
+        {
+            var entries = await AllEntriesAsync(Order.OrderId);
+
+            // 조회하는 동안 다른 작업·버전으로 바뀌었으면 이 응답은 버린다(늦게 온 이전 결과).
+            if (key != CurrentKey)
+            {
+                return;
+            }
+
+            Entries = entries;
+            Selected.IntersectWith(Candidates.Select(x => x.EntryId));
+            LoadedKey = key;
+        }
+        catch (Exception error)
+        {
+            if (key == CurrentKey)
+            {
+                Entries = [];
+                Selected.Clear();
+                LoadedKey = null;
+                Message = error.Message;
+            }
+        }
+    }
+
+    private string CurrentKey => $"{Order.OrderId}:{Order.Version}:{Order.Status}";
+
+    private void Toggle(string entryId, ChangeEventArgs args)
+    {
+        if (args.Value is true)
+        {
+            Selected.Add(entryId);
+        }
+        else
+        {
+            Selected.Remove(entryId);
+        }
+    }
+
+    private Task CancelSelectedAsync() => RunAsync(
+        async () =>
+        {
+            // 클라이언트 검증(최종 판단은 서버).
+            if (Selected.Count == 0)
+            {
+                throw new InvalidOperationException("취소할 실적을 선택해 주세요.");
+            }
+
+            if (Selected.Count > MaxBatch)
+            {
+                throw new InvalidOperationException($"한 번에 {MaxBatch}개까지 취소할 수 있습니다.");
+            }
+
+            if (string.IsNullOrWhiteSpace(Reason) || Reason.Trim().Length > 1000)
+            {
+                throw new InvalidOperationException("취소 사유를 1~1000자로 입력해 주세요.");
+            }
+
+            // 서버 시각을 기다리는 동안 다른 작업이 열릴 수 있으므로,
+            // 보낼 작업·버전·원본·사유를 먼저 고정해 두고 그 값으로만 요청을 만든다.
+            var orderId = Order.OrderId;
+            var version = Order.Version;
+            var originals = Candidates
+                .Where(x => Selected.Contains(x.EntryId))
+                .ToArray();
+            var reason = Reason.Trim();
+
+            var now = await Api.GetServerTimeAsync();
+            var entries = originals
+                .Select(
+                    original => new EntryInput(
+                        Guid.NewGuid().ToString(),
+                        "REVERSAL",
+                        original.Qty,
+                        original.EntryId,
+                        null,
+                        reason,
+                        now
+                    )
+                )
+                .ToArray();
+
+            Pending = new EntryBatch(version, entries);
+            PendingOrderId = orderId;
+            await PendingChanged.InvokeAsync(true);
+            await SendPendingAsync();
+        }
+    );
+
+    private Task ResendAsync() => RunAsync(SendPendingAsync);
+
+    private async Task SendPendingAsync()
+    {
+        try
+        {
+            await Api.SendAsync<EntryBatchResult>(
+                $"api/v1/orders/{PendingOrderId}/entries",
+                Pending!
+            );
+        }
+        catch (ApiFault error) when (error.Status is >= 400 and < 500)
+        {
+            // 서버가 확정적으로 거절했다. 요청을 비우고 최신 원장을 다시 읽어 재검토하게 한다.
+            Pending = null;
+            PendingOrderId = null;
+            await PendingChanged.InvokeAsync(false);
+            LoadedKey = null;
+            await Changed.InvokeAsync();
+            throw new InvalidOperationException(
+                "취소가 거절됐습니다: " + error.Message + " 최신 실적을 확인한 뒤 다시 선택해 주세요."
+            );
+        }
+
+        // 네트워크 오류·5xx는 위에서 예외가 그대로 올라가 Pending이 남는다(같은 요청 재전송).
+        Pending = null;
+        PendingOrderId = null;
+        await PendingChanged.InvokeAsync(false);
+        Selected.Clear();
+        Reason = "";
+        LoadedKey = null;
+        await Changed.InvokeAsync();
+    }
+
+    private async Task<List<EntryView>> AllEntriesAsync(string orderId)
+    {
+        var items = new List<EntryView>();
+        string? cursor = null;
+        do
+        {
+            var path = $"api/v1/orders/{orderId}/entries"
+                + (cursor is null ? "" : "?cursor=" + cursor);
+            var page = await Api.GetAsync<PageResult<EntryView>>(path);
+            items.AddRange(page.Items);
+            cursor = page.NextCursor;
+        }
+        while (cursor is not null);
+
+        return items;
+    }
+
+    private async Task RunAsync(Func<Task> action)
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        await BusyChanged.InvokeAsync(true);
+
+        // 이전 작업의 "완료했습니다."가 남아 새 작업이 끝난 것으로 오해되지 않게 먼저 바꾼다.
+        Message = "처리 중입니다.";
+        try
+        {
+            await action();
+            Message = "완료했습니다.";
+        }
+        catch (Exception error) when (error is HttpRequestException or ApiFault)
+        {
+            // 요청을 만들기 전에 실패했으면(Pending 없음) 보낸 것이 없다. 보낸 뒤라면 같은 요청으로 확인한다.
+            Message = Pending is null
+                ? "서버에 연결하지 못했습니다. 새로고침한 뒤 다시 시도해 주세요."
+                : "결과를 확인하지 못했습니다. 같은 취소 요청을 다시 보내 결과를 확인해 주세요.";
+        }
+        catch (Exception error)
+        {
+            Message = error.Message;
+        }
+        finally
+        {
+            Busy = false;
+            await BusyChanged.InvokeAsync(false);
+        }
+    }
+
+    private static string Kst(DateTime utc) => utc.AddHours(9).ToString("yyyy-MM-dd HH:mm:ss");
+}

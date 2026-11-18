@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk.BlazorWebAssembly">
+  <PropertyGroup>
+    <NoDefaultLaunchSettingsFile>true</NoDefaultLaunchSettingsFile>
+    <StaticWebAssetProjectMode>Default</StaticWebAssetProjectMode>
+    <!-- .razor 파일 유무와 관계없이 restore 결과가 같도록 명시한다(Dockerfile은 소스 없이 restore). -->
+    <RequiresAspNetWebAssets>true</RequiresAspNetWebAssets>
+  </PropertyGroup>
+  <!-- 공유 Contracts는 정확히 고정한 패키지(1.0.0)로 받는다. 다른 레포 소스는 참조하지 않는다. -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" />
+    <PackageReference Include="FactoryMES.Contracts" />
+  </ItemGroup>
+</Project>

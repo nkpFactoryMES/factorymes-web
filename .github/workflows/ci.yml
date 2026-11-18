@@ -1,0 +1,81 @@
+# factorymes-web CI
+# - main push·PR: 이 레포 소스만 restore(잠금)·build·Docker 이미지 build. 문서만 바뀌면 돌지 않는다.
+# - v* 태그 push·수동 실행: 같은 검사 뒤 GHCR에 이미지를 게시한다(GITHUB_TOKEN만 사용).
+# 실제 운영 서버 배포는 하지 않는다. 다른 레포를 읽는 토큰도 쓰지 않는다
+# (공유 패키지는 공개 Release 자산을 SHA-256 고정으로 받는다).
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/nkpfactorymes/factorymes-web
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET (global.json)
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Restore shared packages (pinned SHA-256)
+        shell: pwsh
+        run: ./build/restore-packages.ps1
+
+      - name: Restore (locked)
+        run: dotnet restore services/web/FactoryMES.Web.csproj --locked-mode
+
+      - name: Build
+        run: dotnet build services/web/FactoryMES.Web.csproj -c Release --no-restore
+
+      - name: Docker build
+        run: docker build --tag "$IMAGE:ci-${GITHUB_SHA::12}" .
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Restore shared packages (pinned SHA-256)
+        shell: pwsh
+        run: ./build/restore-packages.ps1
+
+      - name: Login to GHCR
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+
+      - name: Build and push
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then TAG="sha-${GITHUB_SHA::12}"; fi
+          docker build --tag "$IMAGE:$TAG" .
+          docker push "$IMAGE:$TAG"
+          docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$TAG"

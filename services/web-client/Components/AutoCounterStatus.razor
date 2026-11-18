@@ -1,0 +1,144 @@
+@using FactoryMES.Web.Client
+@inject MesApi Api
+
+@* AUTO 작업지시의 설비 카운터 상태(읽기 전용)와 카운터 기준 재확인.
+   - 총수량은 설비 카운터 증가분으로 시스템이 원장에 쌓는다(시작·종료 카운터 차이가 아님).
+   - 시작·재개 뒤 첫 카운터 값은 기준값이라 "자동 기준값 대기" 동안은 생산량이 늘지 않는다.
+   - 카운터가 줄면(리셋·교체) CounterInvalid: 자동 합산을 멈추고, 담당 작업자나 관리자가 사유를 적어
+     기준 재확인을 해야 다음 새 값부터 다시 합산한다. 이 상태와 기준 대기 중에는 제출할 수 없다. *@
+@if (Order.CountMode == "AUTO")
+{
+  <section class="auto-counter @(Order.CounterInvalid ? "tone-red" : null)">
+    <h3>설비 자동 집계</h3>
+    <p class="auto-counter-state">
+      <span class="badge @StateBadge">@StateText</span>
+    </p>
+    <ul class="auto-counter-facts">
+      <li>카운터 매핑 @(Order.CounterMappingId ?? "-")</li>
+      <li>시작 카운터 @(Order.StartCounter?.ToString() ?? "-")</li>
+      <li>최근 카운터 @(Order.AutoCounter?.LatestRawCounter ?? "-")</li>
+      <li>마지막 측정 @Kst(Order.AutoCounter?.LastSampleAt)</li>
+      <li>수집 순번 @(Order.AutoCounter?.LastSequenceNo ?? "-")</li>
+    </ul>
+    <p class="hint">
+      설비가 보낸 총수량은 원장에 "설비 자동"으로 기록되며 수정·취소할 수 없습니다.
+    </p>
+
+    @if (CanRebase)
+    {
+      <form
+        class="counter-rebase"
+        @onsubmit="RebaseAsync"
+        @onsubmit:preventDefault="true"
+      >
+        <p
+          class="modal-status"
+          role="status"
+        >@Message</p>
+        <fieldset disabled="@Busy">
+          <label>
+            기준 재확인 사유
+            <input
+              @bind="Reason"
+              maxlength="1000"
+              required
+            />
+          </label>
+          <button type="submit">카운터 기준 재확인</button>
+        </fieldset>
+      </form>
+    }
+  </section>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public OrderView Order { get; set; } = default!;
+
+    [Parameter]
+    public bool IsAdmin { get; set; }
+
+    [Parameter]
+    public string CurrentUserId { get; set; } = "";
+
+    // 기준 재확인 성공·충돌 뒤 부모가 작업 상세를 다시 읽는다.
+    [Parameter]
+    public EventCallback Changed { get; set; }
+
+    // 전송 중임을 부모에 알린다(그동안 탭·작업 전환을 막는다).
+    [Parameter]
+    public EventCallback<bool> BusyChanged { get; set; }
+
+    private string Message = "";
+    private string Reason = "";
+    private bool Busy;
+
+    // 카운터 이상(감소 감지) 상태의 진행 중 작업에서, 관리자나 담당 작업자만 재확인할 수 있다.
+    private bool CanRebase => Order.CounterInvalid
+        && Order.Status is "RUNNING" or "PAUSED"
+        && (IsAdmin || Order.AssigneeId == CurrentUserId);
+
+    private string StateText => Order.CounterInvalid
+        ? "카운터 이상 감지 · 자동 합산 중지"
+        : Order.Status == "PAUSED"
+            ? "작업 중지 · 자동 합산 안 함(재개 후 새 기준)"
+            : Order.AutoCounter?.AwaitingBaseline == true
+                ? "자동 기준값 대기"
+                : Order.Status == "RUNNING"
+                    ? "자동 합산 중"
+                    : Order.Status;
+
+    private string StateBadge => Order.CounterInvalid
+        ? "critical"
+        : Order.AutoCounter?.AwaitingBaseline == true || Order.Status == "PAUSED"
+            ? "warn"
+            : "info";
+
+    private async Task RebaseAsync()
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(Reason))
+        {
+            Message = "기준 재확인 사유를 입력해 주세요.";
+            return;
+        }
+
+        Busy = true;
+        await BusyChanged.InvokeAsync(true);
+        Message = "처리 중입니다.";
+        try
+        {
+            await Api.SendAsync<OrderView>(
+                $"api/v1/orders/{Order.OrderId}/counter-rebase",
+                new ReasonCommand(Order.Version, Reason.Trim())
+            );
+            Reason = "";
+            Message = "기준 재확인을 저장했습니다. 다음 새 카운터 값을 기준으로 다시 합산합니다.";
+            await Changed.InvokeAsync();
+        }
+        catch (ApiFault error) when (error.Status == 409)
+        {
+            // 그사이 자동 실적 등으로 버전이 바뀌었다. 사유는 남기고 최신 상태를 다시 읽는다.
+            Message = "작업이 그사이 바뀌었습니다. 최신 상태를 확인한 뒤 다시 눌러 주세요.";
+            await Changed.InvokeAsync();
+        }
+        catch (Exception error)
+        {
+            Message = error is HttpRequestException
+                ? "네트워크 오류로 결과를 확인하지 못했습니다. 새로고침해 상태를 확인해 주세요."
+                : error.Message;
+        }
+        finally
+        {
+            Busy = false;
+            await BusyChanged.InvokeAsync(false);
+        }
+    }
+
+    private static string Kst(DateTime? utc) =>
+        utc is null ? "-" : utc.Value.AddHours(9).ToString("MM-dd HH:mm:ss");
+}

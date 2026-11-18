@@ -1,0 +1,159 @@
+@using FactoryMES.Web.Client
+@inject MesApi Api
+
+@* 작업지시의 생산량 집계 방식 선택(관리자 작성·초안 수정 공통).
+   - MANUAL: 작업자가 총수량·불량을 직접 입력한다(카운터 매핑 없음).
+   - AUTO: 같은 설비의 활성 COUNTER 매핑 하나를 고른다. 총수량은 설비 카운터 증가분으로
+     시스템이 원장에 쌓고, 작업자는 불량만 입력한다.
+   AUTO를 고르면 설비별 COUNTER 매핑(GET auto-counter-options, 관리자 전용)을 읽어 보여 준다. *@
+<fieldset class="count-mode">
+  <legend>생산량 집계</legend>
+  <label>
+    집계 방식
+    <select
+      value="@Mode"
+      @onchange="ChangeModeAsync"
+    >
+      <option value="MANUAL">MANUAL (작업자 입력)</option>
+      <option value="AUTO">AUTO (설비 카운터)</option>
+    </select>
+  </label>
+  @if (Mode == "AUTO")
+  {
+    @if (string.IsNullOrEmpty(EquipmentId))
+    {
+      <p class="hint">설비를 먼저 선택하면 그 설비의 COUNTER 매핑을 고를 수 있습니다.</p>
+    }
+    else if (LoadError is not null)
+    {
+      <p class="conflict-wait">@LoadError</p>
+      <button
+        type="button"
+        @onclick="ReloadAsync"
+      >카운터 매핑 다시 읽기</button>
+    }
+    else if (Loading)
+    {
+      <p class="hint">카운터 매핑을 읽는 중입니다.</p>
+    }
+    else if (Options.Length == 0)
+    {
+      <p class="conflict-wait">
+        이 설비에는 활성 COUNTER 매핑이 없습니다. 설비 연결 화면에서 COUNTER 매핑을 먼저 등록해 주세요.
+      </p>
+    }
+    else
+    {
+      <label>
+        카운터 매핑
+        <select
+          value="@MappingId"
+          @onchange="ChangeMappingAsync"
+          required
+        >
+          <option value="">선택</option>
+          @foreach (var option in Options)
+          {
+            <option value="@option.MappingId">
+              @option.MetricCode · @option.TargetId v@(option.ConfigVersion)
+            </option>
+          }
+        </select>
+      </label>
+      @if (Chosen is not null)
+      {
+        <p class="hint auto-counter-latest">
+          최근 값 @(Chosen.LatestValue ?? "없음")@(Chosen.Unit is null ? "" : " " + Chosen.Unit)
+          · 측정 @Kst(Chosen.LatestSampleAt) · 만료 기준 @(Chosen.StaleSec)초
+        </p>
+      }
+      <p class="hint">
+        작업 시작·재개 뒤 처음 받은 카운터 값은 기준값이며 생산량에 넣지 않습니다.
+        그다음 증가분부터 총수량이 됩니다.
+      </p>
+    }
+  }
+</fieldset>
+
+@code {
+    [Parameter]
+    public string Mode { get; set; } = "MANUAL";
+
+    [Parameter]
+    public EventCallback<string> ModeChanged { get; set; }
+
+    [Parameter]
+    public string MappingId { get; set; } = "";
+
+    [Parameter]
+    public EventCallback<string> MappingIdChanged { get; set; }
+
+    // 작성 폼에서 고른 설비. 바뀌면 그 설비의 매핑을 다시 읽는다.
+    [Parameter]
+    public string EquipmentId { get; set; } = "";
+
+    private AutoCounterOption[] Options = [];
+    private string? LoadedFor;
+    private bool Loading;
+    private string? LoadError;
+
+    private AutoCounterOption? Chosen => Options.FirstOrDefault(x => x.MappingId == MappingId);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Mode == "AUTO" && !string.IsNullOrEmpty(EquipmentId) && EquipmentId != LoadedFor)
+        {
+            await LoadAsync();
+        }
+    }
+
+    private Task ReloadAsync()
+    {
+        LoadedFor = null;
+        return LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        LoadedFor = EquipmentId;
+        Loading = true;
+        LoadError = null;
+        try
+        {
+            Options = await Api.GetAsync<AutoCounterOption[]>(
+                "api/v1/auto-counter-options?equipmentId=" + Uri.EscapeDataString(EquipmentId)
+            );
+        }
+        catch (Exception error)
+        {
+            Options = [];
+            LoadError = "카운터 매핑을 읽지 못했습니다: " + error.Message;
+        }
+        finally
+        {
+            Loading = false;
+        }
+
+        // 설비가 바뀌어 고른 매핑이 목록에 없으면 비운다(다른 설비의 카운터를 쓰지 않게).
+        if (MappingId != "" && Options.All(x => x.MappingId != MappingId))
+        {
+            await MappingIdChanged.InvokeAsync("");
+        }
+    }
+
+    private async Task ChangeModeAsync(ChangeEventArgs args)
+    {
+        var mode = args.Value?.ToString() == "AUTO" ? "AUTO" : "MANUAL";
+        await ModeChanged.InvokeAsync(mode);
+        if (mode == "MANUAL" && MappingId != "")
+        {
+            await MappingIdChanged.InvokeAsync("");
+        }
+    }
+
+    private Task ChangeMappingAsync(ChangeEventArgs args) =>
+        MappingIdChanged.InvokeAsync(args.Value?.ToString() ?? "");
+
+    private static string Kst(DateTime? utc) =>
+        utc is null ? "없음" : utc.Value.AddHours(9).ToString("MM-dd HH:mm:ss");
+}

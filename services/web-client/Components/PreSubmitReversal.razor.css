@@ -1,0 +1,24 @@
+/* 공통 모양은 web/wwwroot/factorymes.css에 있다. 여기에는 제출 전 실적 취소 영역 고유 규칙만 둔다. */
+.pre-submit-reversal {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  margin: 16px 0;
+  background: var(--cool);
+}
+
+.pending {
+  border-left: 4px solid var(--amber);
+  background: var(--amber-tint);
+  padding: 8px 16px;
+  margin: 12px 0;
+}
+
+.candidates {
+  list-style: none;
+  padding: 0;
+}
+
+.candidates label {
+  font-weight: 400;
+}

@@ -1,0 +1,138 @@
+/* 공통 모양은 web/wwwroot/factorymes.css에 있다. 여기에는 발송 이력 화면 고유 규칙만 둔다. */
+
+/* 실제 발송이 꺼져 있다는 안내는 화면 맨 위에서 항상 보이게 한다. */
+.delivery-notice {
+  max-width: none;
+  padding: 10px 14px;
+  border-left: 4px solid var(--amber);
+  background: var(--amber-tint);
+  color: var(--ink);
+}
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 20px;
+}
+
+.filters label {
+  flex: 0 1 220px;
+}
+
+/* Mock 결과는 실제 상태 배지와 다른 모양(밑줄 없는 글자 + 왼쪽 점)으로 구분한다. */
+.mock-outcome {
+  white-space: nowrap;
+}
+
+.mock-outcome::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--line);
+  vertical-align: 1px;
+}
+
+.mock-outcome.accepted::before {
+  background: var(--teal);
+}
+
+.mock-outcome.retry_wait::before,
+.mock-outcome.waiting::before {
+  background: var(--amber);
+}
+
+.mock-outcome.failed {
+  color: var(--red);
+}
+
+.mock-outcome.failed::before {
+  background: var(--red);
+}
+
+tr.delivery-failed td:first-child {
+  box-shadow: inset 5px 0 0 var(--red);
+}
+
+td button {
+  white-space: nowrap;
+}
+
+.receipt-dialog dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 12px 0;
+}
+
+.receipt-dialog dt {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.receipt-dialog dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.receipt-dialog .hash {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85rem;
+}
+
+.receipt-body {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--cool);
+  font-family: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Outbox 재처리: 최종 실패 행은 왼쪽 빨간 줄, 팝업 안 사실 목록은 두 열. */
+tr.outbox-failed td:first-child {
+  box-shadow: inset 5px 0 0 var(--red);
+}
+
+.outbox-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 12px 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.outbox-facts dt {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.outbox-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 로컬 통신 시연(SMTP·Webhook) 영역: Mock 시연과 구분한다. */
+.local-demo {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+/* 로컬 수신 결과: 수신 확인도 외부 발송 성공 색(초록)을 쓰지 않는다. */
+.local-outcome {
+  font-weight: 600;
+}
+
+.local-outcome.failed {
+  color: var(--red);
+}
+
+.local-outcome.retry_wait,
+.local-outcome.waiting {
+  color: var(--amber);
+}

@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8"/>
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1"
+    />
+    <base href="/"/>
+    <link
+      rel="stylesheet"
+      href="factorymes.css"
+    />
+    <link
+      rel="stylesheet"
+      href="FactoryMES.Web.styles.css"
+    />
+    <HeadOutlet @rendermode="PageRenderMode" />
+  </head>
+  <body>
+    @* 업무 화면은 전역 Interactive WebAssembly 라우팅(공통 shell 유지),
+       로그인·현황판처럼 [ExcludeFromInteractiveRouting]인 페이지는 정적 SSR로 렌더링한다. *@
+    <FactoryMES.Web.Client.Routes @rendermode="PageRenderMode" />
+    <script type="module">
+      if (document.querySelector("#login-form")) {
+        import("./session.js");
+      }
+    </script>
+    @* 공통 팝업 키보드 동작(첫 포커스·Tab 순환·닫은 뒤 포커스 복귀). *@
+    <script src="modal.js">
+    </script>
+    <script src="_framework/blazor.web.js">
+    </script>
+  </body>
+</html>
+
+@code {
+    [CascadingParameter]
+    private HttpContext HttpContext { get; set; } = default!;
+
+    // 공식 문서(render-modes, ExcludeFromInteractiveRouting) 패턴: 정적 페이지면 null(정적 SSR).
+    private IComponentRenderMode? PageRenderMode =>
+        HttpContext.AcceptsInteractiveRouting()
+            ? new InteractiveWebAssemblyRenderMode(prerender: false)
+            : null;
+}

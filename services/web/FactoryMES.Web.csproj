@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <!-- SDK는 .razor 파일이 보일 때만 화면 자산 패키지를 암묵적으로 추가한다.
+       Dockerfile은 소스 없이 csproj만으로 restore하므로, 값을 명시해 잠금 파일과 항상 같게 한다. -->
+  <PropertyGroup>
+    <RequiresAspNetWebAssets>true</RequiresAspNetWebAssets>
+  </PropertyGroup>
+
+  <!-- 공유 Foundation은 정확히 고정한 패키지(1.0.0)로 받는다. 다른 레포 소스는 참조하지 않는다. -->
+  <ItemGroup>
+    <PackageReference Include="FactoryMES.Foundation" />
+    <PackageReference Include="Yarp.ReverseProxy" />
+  </ItemGroup>
+
+  <!-- 같은 배포 단위인 WASM 화면(web-client)은 같은 레포 안 프로젝트 참조를 유지한다. -->
+  <ItemGroup>
+    <ProjectReference Include="../web-client/FactoryMES.Web.Client.csproj" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.Server" />
+  </ItemGroup>
+</Project>

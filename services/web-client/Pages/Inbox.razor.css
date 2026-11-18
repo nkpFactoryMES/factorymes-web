@@ -1,0 +1,40 @@
+/* 공통 모양은 web/wwwroot/factorymes.css에 있다. 여기에는 알림함 고유 규칙만 둔다. */
+
+.notifications {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0 0;
+}
+
+.notifications li {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 20px;
+  margin: 10px 0;
+}
+
+/* 읽지 않은 알림: 왼쪽 Teal 줄과 굵은 제목(색만으로 구분하지 않도록 "읽지 않음" 문구도 함께 표시) */
+.notifications li.unread {
+  border-left: 6px solid var(--teal);
+}
+
+.notifications li.read h2 {
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.notifications h2 {
+  font-size: 1.05rem;
+  margin: 0 0 6px;
+}
+
+.notifications p {
+  margin: 4px 0;
+}
+
+.meta {
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}

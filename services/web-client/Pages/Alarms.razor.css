@@ -1,0 +1,72 @@
+/* 공통 모양은 web/wwwroot/factorymes.css에 있다. 여기에는 경보 화면 고유 규칙만 둔다. */
+
+/* 경보 행: 상태 글자(배지)와 함께 왼쪽 줄 색으로 우선순위를 보인다. */
+.alarms tbody tr.state-active td:first-child {
+  box-shadow: inset 5px 0 0 var(--red);
+  font-weight: 700;
+}
+
+.alarms tbody tr.state-recovered td:first-child {
+  box-shadow: inset 5px 0 0 var(--teal);
+}
+
+.alarms tbody tr.state-closed td {
+  color: var(--muted);
+}
+
+.alarm-detail {
+  border-color: var(--navy);
+  border-width: 2px;
+}
+
+.alarm-detail ul {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 규칙 설정은 경보 목록·상세보다 아래, 옅은 바탕으로 구분한다. */
+.rules {
+  background: var(--cool);
+}
+
+.rules form {
+  border-top: 1px solid var(--line);
+  margin-top: 16px;
+  padding-top: 4px;
+}
+
+.rule-server {
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.high-fields {
+  border-left: 4px solid var(--amber);
+  padding: 4px 0 4px 16px;
+  margin: 12px 0;
+}
+
+/* 임계값과 유지 시간을 한 줄에 짝지어 둔다(좁은 화면에서는 아래로 내려간다). */
+.threshold-pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 20px;
+}
+
+.threshold-pair label {
+  flex: 1 1 180px;
+}
+
+/* 규칙 표: 조건 열만 줄바꿈하고 짧은 열(종류·등급·사용)과 수정 버튼은 한 줄로 둔다.
+   표가 넓어지면 section 안에서 가로 스크롤된다. */
+.rules td:nth-child(3),
+.rules td:nth-child(5),
+.rules td:nth-child(6),
+.rules td button {
+  white-space: nowrap;
+}
+
+.rules td:nth-child(4) {
+  min-width: 220px;
+}

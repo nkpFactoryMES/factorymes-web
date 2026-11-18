@@ -1,0 +1,25 @@
+/* 공통 모양은 web/wwwroot/factorymes.css에 있다. 여기에는 설비 연결 화면 고유 규칙만 둔다. */
+
+/* 수치 매핑 한 건씩 묶은 입력 */
+.configuration fieldset {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin: 12px 0;
+}
+
+td {
+  overflow-wrap: anywhere;
+}
+
+/* 프로토콜별 주소 예시와 Modbus 소스 주소 규칙 */
+.endpoint-hint,
+.modbus-rules {
+  color: var(--muted);
+  font-size: 0.9em;
+  margin: 4px 0 12px;
+}
+
+.modbus-rules {
+  padding-left: 20px;
+}

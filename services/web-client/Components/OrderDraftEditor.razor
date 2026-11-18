@@ -1,0 +1,463 @@
+@using FactoryMES.Web.Client
+@inject MesApi Api
+
+@* 관리자 전용: DRAFT 작업지시 수정, DRAFT·RELEASED 작업지시 취소.
+   입력란은 "초안 수정 열기"를 눌렀을 때만 보인다(부모 작성 폼과 화면·라벨이 섞이지 않게). *@
+@if (IsAdmin && Order.Status is "DRAFT" or "RELEASED")
+{
+  <section class="draft-editor">
+    <h3>작업지시 관리</h3>
+    <p role="status">@Message</p>
+
+    <fieldset disabled="@Busy">
+      @if (Order.Status == "DRAFT" && !Editing)
+      {
+        <button @onclick="OpenEditorAsync">초안 수정 열기</button>
+      }
+
+      @if (Order.Status == "DRAFT" && Editing)
+      {
+        @if (Conflict)
+        {
+          <div class="conflict">
+            <p>
+              다른 변경이 먼저 저장됐습니다. 아래 서버의 최신 값을 확인한 뒤
+              최신 값으로 다시 시작하거나, 지금 입력을 유지한 채 다시 저장해 주세요.
+            </p>
+            @* "내 입력 유지"는 초안 전체를 덮어쓰므로, 덮어쓸 서버 값을 빠짐없이 보여 준다. *@
+            <p>서버 최신 값</p>
+            <ul>
+              <li>품목: @ProductLabel(Order.ProductId)</li>
+              <li>설비: @EquipmentLabel(Order.EquipmentId)</li>
+              <li>
+                집계: @Order.CountMode
+                @(Order.CounterMappingId is null ? "" : "· 매핑 " + Order.CounterMappingId)
+              </li>
+              <li>담당 작업자: @WorkerLabel(Order.AssigneeId)</li>
+              <li>작업명: @(Order.OperationLabel ?? "-")</li>
+              <li>목표: @Order.TargetQty EA</li>
+              <li>계획: @Kst(Order.PlannedStart) ~ @Kst(Order.PlannedEnd)</li>
+              <li>
+                점검 항목:
+                @if (Order.Checklist.Length == 0)
+                {
+                  <span>없음</span>
+                }
+                else
+                {
+                  <ol>
+                    @foreach (var item in Order.Checklist.OrderBy(x => x.Seq))
+                    {
+                      <li>@item.Label (@(item.Required ? "필수" : "선택"))</li>
+                    }
+                  </ol>
+                }
+              </li>
+            </ul>
+            <button
+              type="button"
+              @onclick="LoadLatest"
+            >최신 값 불러오기</button>
+            <button
+              type="button"
+              @onclick="KeepMine"
+            >내 입력 유지(최신 버전 기준)</button>
+          </div>
+        }
+
+        <form
+          @onsubmit="SaveDraftAsync"
+          @onsubmit:preventDefault="true"
+        >
+          <label>
+            초안 품목
+            <select
+              @bind="ProductId"
+              required
+            >
+              @foreach (var product in Products)
+              {
+                <option value="@product.ProductId">@product.Name (@product.Code)</option>
+              }
+            </select>
+          </label>
+          <label>
+            초안 설비
+            <select
+              @bind="EquipmentId"
+              required
+            >
+              @foreach (var equipment in Equipment)
+              {
+                <option value="@equipment.EquipmentId">@equipment.Name</option>
+              }
+            </select>
+          </label>
+          <AutoCounterPicker
+            @bind-Mode="CountMode"
+            @bind-MappingId="CounterMappingId"
+            EquipmentId="@EquipmentId"
+          />
+          <label>
+            초안 담당 작업자
+            <select
+              @bind="AssigneeId"
+              required
+            >
+              @foreach (var worker in Workers)
+              {
+                <option value="@worker.UserId">@worker.Name (@worker.Login)</option>
+              }
+            </select>
+          </label>
+          <label>
+            초안 작업명
+            <input
+              @bind="OperationLabel"
+              maxlength="100"
+            />
+          </label>
+          <label>
+            초안 목표 수량 (EA)
+            <input
+              type="number"
+              @bind="TargetQty"
+              min="1"
+              max="999999999999"
+              required
+            />
+          </label>
+          <label>
+            초안 계획 시작 (KST)
+            <input
+              type="datetime-local"
+              @bind="PlannedStart"
+              required
+            />
+          </label>
+          <label>
+            초안 계획 종료 (KST)
+            <input
+              type="datetime-local"
+              @bind="PlannedEnd"
+              required
+            />
+          </label>
+          <label>
+            초안 점검 항목 (한 줄에 하나, 최대 30개, "선택:"으로 시작하면 필수가 아님)
+            <textarea
+              @bind="ChecklistText"
+              maxlength="6000"
+            ></textarea>
+          </label>
+          <button type="submit">초안 변경 저장</button>
+          <button
+            type="button"
+            @onclick="CloseEditor"
+          >초안 수정 닫기</button>
+        </form>
+      }
+
+      @* DRAFT·RELEASED 작업지시 취소(시작 전만). 서버가 미착수 여부를 다시 검사한다. *@
+      <form
+        @onsubmit="CancelAsync"
+        @onsubmit:preventDefault="true"
+      >
+        <label>
+          취소 사유
+          <input
+            @bind="CancelReason"
+            maxlength="1000"
+            required
+          />
+        </label>
+        <button type="submit">작업지시 취소</button>
+      </form>
+    </fieldset>
+  </section>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public OrderView Order { get; set; } = default!;
+
+    [Parameter]
+    public bool IsAdmin { get; set; }
+
+    [Parameter]
+    public EventCallback Changed { get; set; }
+
+    // 전송·재조회 중임을 부모에 알린다. 부모는 그동안 상세 탭과 다른 작업 열기를 막는다.
+    [Parameter]
+    public EventCallback<bool> BusyChanged { get; set; }
+
+    private const string OptionalPrefix = "선택:";
+
+    private string Message = "";
+    private bool Busy;
+    private bool Editing;
+
+    // 입력이 어느 버전을 바탕으로 했는지 기억한다. 서버가 409를 주면 입력을 덮어쓰지 않는다.
+    private long BaseVersion;
+    private bool Conflict;
+    private string? ShownOrderId;
+
+    private ProductChoice[] Products = [];
+    private EquipmentChoice[] Equipment = [];
+    private UserChoice[] Workers = [];
+
+    private string ProductId = "";
+    private string EquipmentId = "";
+
+    // 생산량 집계 방식(MANUAL/AUTO)과 AUTO일 때의 COUNTER 매핑 ID.
+    private string CountMode = "MANUAL";
+    private string CounterMappingId = "";
+    private string AssigneeId = "";
+    private string OperationLabel = "";
+    private long TargetQty;
+    private DateTime PlannedStart;
+    private DateTime PlannedEnd;
+    private string ChecklistText = "";
+    private string CancelReason = "";
+
+    protected override void OnParametersSet()
+    {
+        // 다른 작업을 열면 편집 상태를 처음부터 다시 잡는다.
+        if (Order.OrderId != ShownOrderId)
+        {
+            ShownOrderId = Order.OrderId;
+            Editing = false;
+            Conflict = false;
+            CancelReason = "";
+            Message = "";
+            LoadLatest();
+            return;
+        }
+
+        // 같은 작업의 새 버전: 충돌 검토 중이 아니면 최신 값을 보여 준다.
+        if (Order.Version != BaseVersion && !Conflict)
+        {
+            LoadLatest();
+        }
+    }
+
+    private async Task OpenEditorAsync()
+    {
+        await RunAsync(
+            async () =>
+            {
+                // 열 때마다 세 목록을 새로 읽고, 셋 다 성공했을 때만 바꾼다.
+                // 일부만 성공한 상태가 남아 다음 열기에서 누락 목록을 건너뛰지 않게 한다.
+                var products = await AllAsync<ProductChoice>("products?active=true");
+                var equipment = await AllAsync<EquipmentChoice>("equipment?active=true");
+                var workers = await AllAsync<UserChoice>(
+                    "users?role=WORKER&active=true&assignable=true"
+                );
+
+                Products = products;
+                Equipment = equipment;
+                Workers = workers;
+                LoadLatest();
+                Editing = true;
+            },
+            reportDone: false
+        );
+    }
+
+    private void CloseEditor()
+    {
+        Editing = false;
+        Conflict = false;
+        LoadLatest();
+    }
+
+    // 서버의 현재 값(부모가 넘겨 준 Order)으로 입력을 다시 채운다.
+    private void LoadLatest()
+    {
+        ProductId = Order.ProductId;
+        EquipmentId = Order.EquipmentId;
+        CountMode = Order.CountMode;
+        CounterMappingId = Order.CounterMappingId ?? "";
+        AssigneeId = Order.AssigneeId;
+        OperationLabel = Order.OperationLabel ?? "";
+        TargetQty = Order.TargetQty;
+        PlannedStart = Order.PlannedStart.AddHours(9);
+        PlannedEnd = Order.PlannedEnd.AddHours(9);
+        ChecklistText = string.Join(
+            "\n",
+            Order.Checklist
+                .OrderBy(x => x.Seq)
+                .Select(x => x.Required ? x.Label : OptionalPrefix + x.Label)
+        );
+        BaseVersion = Order.Version;
+        Conflict = false;
+    }
+
+    // 사용자가 최신 서버 값을 확인했고, 지금 입력으로 덮어쓰겠다고 정했다.
+    private void KeepMine()
+    {
+        BaseVersion = Order.Version;
+        Conflict = false;
+        Message = "최신 버전 기준으로 다시 저장할 수 있습니다.";
+    }
+
+    private Task SaveDraftAsync() => RunAsync(
+        async () =>
+        {
+            if (Conflict)
+            {
+                throw new InvalidOperationException(
+                    "충돌을 먼저 정리해 주세요. 최신 값 불러오기 또는 내 입력 유지를 선택합니다."
+                );
+            }
+
+            if (CountMode == "AUTO" && CounterMappingId == "")
+            {
+                throw new InvalidOperationException("AUTO 집계는 카운터 매핑을 선택해야 합니다.");
+            }
+
+            var input = new OrderDraftUpdate(
+                BaseVersion,
+                ProductId,
+                EquipmentId,
+                AssigneeId,
+                string.IsNullOrWhiteSpace(OperationLabel) ? null : OperationLabel.Trim(),
+                TargetQty,
+                CountMode,
+                CountMode == "AUTO" ? CounterMappingId : null,
+                UtcPlan(PlannedStart),
+                UtcPlan(PlannedEnd),
+                ParseChecklist()
+            );
+
+            await Api.SendAsync<OrderView>(
+                $"api/v1/orders/{Order.OrderId}/draft",
+                input,
+                put: true
+            );
+
+            Editing = false;
+            await Changed.InvokeAsync();
+        }
+    );
+
+    private Task CancelAsync() => RunAsync(
+        async () =>
+        {
+            await Api.SendAsync<OrderView>(
+                $"api/v1/orders/{Order.OrderId}/cancel",
+                new ReasonCommand(Order.Version, CancelReason.Trim())
+            );
+
+            CancelReason = "";
+            Editing = false;
+            await Changed.InvokeAsync();
+        }
+    );
+
+    private ChecklistDefinition[] ParseChecklist()
+    {
+        var lines = ChecklistText
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (lines.Length > 30)
+        {
+            throw new InvalidOperationException("점검 항목은 30개 이내입니다.");
+        }
+
+        return lines
+            .Select(
+                (line, index) => line.StartsWith(OptionalPrefix)
+                    ? new ChecklistDefinition(
+                        index + 1,
+                        line[OptionalPrefix.Length..].Trim(),
+                        false
+                    )
+                    : new ChecklistDefinition(
+                        index + 1,
+                        line,
+                        true
+                    )
+            )
+            .ToArray();
+    }
+
+    private async Task<T[]> AllAsync<T>(string path)
+    {
+        var items = new List<T>();
+        string? cursor = null;
+        do
+        {
+            var suffix = cursor is null ? "" : "&cursor=" + cursor;
+            var page = await Api.GetAsync<PageResult<T>>("api/v1/" + path + suffix);
+            items.AddRange(page.Items);
+            cursor = page.NextCursor;
+        }
+        while (cursor is not null);
+
+        return items.ToArray();
+    }
+
+    // 버튼 하나의 처리. 409는 입력을 지키고 부모를 갱신해 최신 값을 함께 보여 준다.
+    // 통신 오류·5xx는 자동으로 다시 보내지 않는다(생성·취소가 이미 됐을 수 있음).
+    private async Task RunAsync(Func<Task> action, bool reportDone = true)
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        await BusyChanged.InvokeAsync(true);
+        Message = "처리 중입니다.";
+        try
+        {
+            await action();
+            Message = reportDone ? "완료했습니다." : "";
+        }
+        catch (ApiFault error) when (error.Status == 409)
+        {
+            Conflict = Editing;
+            Message = "다른 변경과 충돌했습니다: " + error.Message;
+            await Changed.InvokeAsync();
+        }
+        catch (ApiFault error) when (error.Status >= 500)
+        {
+            Message = "서버 응답을 확인하지 못했습니다. 다시 보내기 전에 새로고침해 결과를 확인해 주세요.";
+        }
+        catch (HttpRequestException)
+        {
+            Message = "네트워크 오류로 결과를 확인하지 못했습니다. 새로고침해 결과를 확인해 주세요.";
+        }
+        catch (Exception error)
+        {
+            Message = error.Message;
+        }
+        finally
+        {
+            Busy = false;
+            await BusyChanged.InvokeAsync(false);
+        }
+    }
+
+    // 목록에 없는 값(비활성화된 품목 등)은 ID를 그대로 보여 준다.
+    private string ProductLabel(string id) =>
+        Products.FirstOrDefault(x => x.ProductId == id) is { } product
+            ? $"{product.Name} ({product.Code})"
+            : "ID " + id;
+
+    private string EquipmentLabel(string id) =>
+        Equipment.FirstOrDefault(x => x.EquipmentId == id)?.Name ?? "ID " + id;
+
+    private string WorkerLabel(string id) =>
+        Workers.FirstOrDefault(x => x.UserId == id) is { } worker
+            ? $"{worker.Name} ({worker.Login})"
+            : "ID " + id;
+
+    private static DateTime UtcPlan(DateTime kst)
+    {
+        var utc = DateTime.SpecifyKind(kst.AddHours(-9), DateTimeKind.Utc);
+        return utc.AddTicks(-(utc.Ticks % 10));
+    }
+
+    private static string Kst(DateTime utc) => utc.AddHours(9).ToString("yyyy-MM-dd HH:mm");
+}

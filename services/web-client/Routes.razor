@@ -1,0 +1,30 @@
+@using FactoryMES.Web.Client.Layout
+
+@* 업무 화면의 클라이언트 라우터. 전역 Interactive WebAssembly로 실행되어,
+   업무 페이지 사이를 오갈 때 문서·WASM 런타임·공통 shell(ConsoleLayout)이 그대로 유지되고 본문만 바뀐다.
+   로그인·현황판("/")은 서버 쪽 정적 페이지([ExcludeFromInteractiveRouting])라 이 라우터가 다루지 않는다. *@
+<Router AppAssembly="typeof(MesApi).Assembly">
+  <Found Context="routeData">
+    <RouteView
+      RouteData="routeData"
+      DefaultLayout="typeof(ConsoleLayout)"
+    />
+    <FocusOnNavigate
+      RouteData="routeData"
+      Selector="main h1"
+    />
+  </Found>
+  <NotFound>
+    <LayoutView Layout="typeof(ConsoleLayout)">
+      <main>
+        <header>
+          <div>
+            <p>FACTORY MES</p>
+            <h1>화면을 찾을 수 없습니다</h1>
+          </div>
+        </header>
+        <p>주소를 확인하거나 왼쪽 메뉴에서 업무 화면을 골라 주세요.</p>
+      </main>
+    </LayoutView>
+  </NotFound>
+</Router>

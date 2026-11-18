@@ -1,0 +1,895 @@
+@using FactoryMES.Web.Client.Components
+@page "/orders"
+@inject FactoryMES.Web.Client.MesApi Api
+@implements IDisposable
+<PageTitle>작업지시 · FactoryMES</PageTitle>
+<main>
+  <header>
+    <div>
+      <p>FACTORY MES / PRODUCTION</p>
+      <h1>작업지시</h1>
+      <p>@(User is null ? "로그인 확인 중" : $"{User.Name} · {RoleLabel}")</p>
+    </div>
+  </header>
+  <p role="status">@Message</p>
+  @if (User is not null)
+  {
+    <fieldset disabled="@Busy">
+      @* 상단 도구: 목록 새로고침과(관리자) 작업지시 작성 팝업. *@
+      <div class="toolbar">
+        <button @onclick="ReloadAsync">새로고침</button>
+        @if (Admin)
+        {
+          <button
+            type="button"
+            @onclick="OpenCreate"
+          >작업지시 작성</button>
+        }
+      </div>
+      @if (Admin && CreateOpen)
+      {
+        <div
+          class="modal-backdrop"
+          @onclick="CloseCreate"
+        ></div>
+        <section
+          class="order-create modal modal-wide"
+          role="dialog"
+          aria-modal="true"
+          aria-label="작업지시 작성"
+          @onkeydown="CloseCreateOnEscape"
+        >
+          <div class="modal-bar">
+            <button
+              type="button"
+              class="modal-close"
+              @onclick="CloseCreate"
+            >닫기</button>
+          </div>
+          <p
+            class="modal-status"
+            role="status"
+          >@Message</p>
+          <h2>작업지시 작성</h2>
+          <form
+            @onsubmit="CreateAsync"
+            @onsubmit:preventDefault="true"
+          >
+            <label>
+              품목
+              <select
+                @bind="ProductId"
+                required
+              >
+                <option value="">선택</option>
+                @foreach (var product in Products)
+                {
+                  <option value="@product.ProductId">@product.Name (@product.Code)</option>
+                }
+              </select>
+            </label>
+            <label>
+              설비
+              <select
+                @bind="EquipmentId"
+                required
+              >
+                <option value="">선택</option>
+                @foreach (var equipment in Equipment)
+                {
+                  <option value="@equipment.EquipmentId">@equipment.Name</option>
+                }
+              </select>
+            </label>
+            <AutoCounterPicker
+              @bind-Mode="CountMode"
+              @bind-MappingId="CounterMappingId"
+              EquipmentId="@EquipmentId"
+            />
+            <label>
+              담당 작업자
+              <select
+                @bind="AssigneeId"
+                required
+              >
+                <option value="">선택</option>
+                @foreach (var worker in Workers)
+                {
+                  <option value="@worker.UserId">@worker.Name (@worker.Login)</option>
+                }
+              </select>
+            </label>
+            <label>
+              작업명
+              <input
+                @bind="OperationLabel"
+                maxlength="100"
+                /
+              >
+            </label>
+            <label>
+              목표 수량 (EA)
+              <input
+                type="number"
+                @bind="TargetQty"
+                min="1"
+                max="999999999999"
+                required
+              />
+            </label>
+            <p>계획 시각은 한국 시간(KST)으로 입력합니다.</p>
+            <label>
+              계획 시작
+              <input
+                type="datetime-local"
+                @bind="PlannedStart"
+                required
+                /
+              >
+            </label>
+            <label>
+              계획 종료
+              <input
+                type="datetime-local"
+                @bind="PlannedEnd"
+                required
+                /
+              >
+            </label>
+            <label>
+              필수 점검 (한 줄에 한 항목, 최대 30개)
+              <textarea @bind="ChecklistText" maxlength="6000"></textarea>
+            </label>
+            <button type="submit">초안 저장</button>
+          </form>
+          <p>선택 항목이 비어 있으면 로컬 init-demo 명령으로 시연 기준정보를 준비해 주세요.</p>
+        </section>
+      }
+      @* 목록(왼쪽)과 선택한 작업 상세(오른쪽). 좁은 화면에서는 위아래로 쌓인다. *@
+      <div class="orders-layout @(Selected is null ? null : "has-detail")">
+        <section class="order-list">
+          <h2>@(Admin ? "전체 작업" : "내 작업")</h2>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>작업</th>
+                  <th>상태</th>
+                  <th>목표/총수량/불량</th>
+                  <th>열기</th>
+                </tr>
+              </thead>
+              <tbody>
+                @foreach (var order in OrderRows)
+                {
+                  <tr>
+                    <td>@(order.OperationLabel ?? order.OrderNo)</td>
+                    <td>
+                      <span class="badge order-@order.Status.ToLowerInvariant()">
+                        @order.Status
+                      </span>
+                    </td>
+                    <td>@order.TargetQty / @order.TotalQty / @order.RejectQty</td>
+                    <td>
+                      <button
+                        disabled="@ChildBusy"
+                        @onclick="() => SelectAsync(order.OrderId)"
+                      >상세</button>
+                    </td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+          @if (NextCursor is not null)
+          {
+            <button @onclick="NextAsync">다음 목록</button>
+          }
+        </section>
+        @if (Selected is not null)
+        {
+          <section>
+            <h2>작업 상세 · @Selected.OperationLabel</h2>
+            <p>@Selected.OrderNo · @Selected.Status · 버전 @Selected.Version</p>
+            <p>계획: @Kst(Selected.PlannedStart) ~ @Kst(Selected.PlannedEnd)</p>
+            <p>목표 @Selected.TargetQty / 총수량 @Selected.TotalQty / 불량 @Selected.RejectQty</p>
+            <p>양품 @Selected.GoodQty · 제출 사유: @Selected.CompletionReason</p>
+            <p class="count-mode-line">
+              집계 @(Selected.CountMode == "AUTO" ? "AUTO · 설비 카운터" : "MANUAL · 작업자 입력")
+            </p>
+            <AutoCounterStatus
+              Order="Selected"
+              IsAdmin="Admin"
+              CurrentUserId="@User!.UserId"
+              Changed="LifecycleChangedAsync"
+              BusyChanged='busy => ChildBusyChanged("counter", busy)'
+            />
+            @* 상세 안 탭: 역할·상태에 맞는 작업만 탭으로 보인다. 숨긴 탭도 화면에서 지우지 않고
+               hidden으로만 가려, 결과 미확인 요청(같은 UUID 재전송) 상태가 탭 전환으로 사라지지 않는다.
+               탭은 바깥 fieldset 안이라 처리 중(Busy)에는 누를 수 없고, 아래 구성 요소가
+               전송·재조회 중(ChildBusy)일 때도 탭과 다른 작업 열기를 막는다. *@
+            <div
+              class="tabs"
+              role="tablist"
+              aria-label="작업 상세"
+            >
+              @foreach (var tab in DetailTabs())
+              {
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected="@(tab == ShownTab() ? "true" : "false")"
+                  disabled="@ChildBusy"
+                  @onclick="() => ShowDetailTab(tab)"
+                >@DetailTabLabel(tab)</button>
+              }
+            </div>
+            <div
+              class="detail-panel"
+              role="tabpanel"
+              hidden="@(ShownTab() != "basic")"
+            >
+              @foreach (var check in Selected.Checklist)
+              {
+                <label>
+                  <input
+                    type="checkbox"
+                    checked="@check.Checked"
+                    disabled="@(!Worker || Selected.Status != "RELEASED")"
+                    @onchange="eventArgs => CheckAsync(check, eventArgs)"
+                  />
+                  @check.Label @(check.Required ? "(필수)" : "")
+                </label>
+              }
+              @if (Admin && Selected.Status == "DRAFT")
+              {
+                <button @onclick='() => CommandAsync("release")'>작업지시 발행</button>
+              }
+              @if (Worker && Selected.Status == "RELEASED")
+              {
+                <button @onclick='() => CommandAsync("start")'>작업 시작</button>
+              }
+              @if (Admin && Selected.Status == "SUBMITTED")
+              {
+                <label>
+                  마감 검토 사유
+                  <input
+                    @bind="CloseReason"
+                    maxlength="1000"
+                    /
+                  >
+                </label>
+                <button @onclick="CloseAsync">관리자 마감</button>
+              }
+              <h3>실적 원장</h3>
+              @foreach (var entry in Entries)
+              {
+                <p class="@(entry.Source == "AUTO" ? "entry-auto" : null)">
+                  @Kst(entry.OccurredAt) · @entry.Kind @entry.Qty EA
+                  · @(entry.Source == "AUTO" ? "설비 자동" : entry.Reason)
+                </p>
+              }
+              @if (EntryCursor is not null)
+              {
+                <button @onclick="MoreEntriesAsync">실적 더 보기</button>
+              }
+            </div>
+            <div
+              class="detail-panel"
+              role="tabpanel"
+              hidden="@(ShownTab() != "entry")"
+            >
+              @if (Worker && Selected.Status is "RUNNING" or "PAUSED")
+              {
+                @if (IsAuto)
+                {
+                  <h3>불량 추가 (총수량은 설비 카운터가 자동 집계합니다)</h3>
+                }
+                else
+                {
+                  <h3>실적 추가 (기존 합계에 더해집니다)</h3>
+                }
+                <fieldset disabled="@(Pending is not null)">
+                  @if (!IsAuto)
+                  {
+                    <label>
+                      총수량 증가 (EA)
+                      <input
+                        type="number"
+                        @bind="TotalIncrement"
+                        min="0"
+                        max="999999999999"
+                      />
+                    </label>
+                  }
+                  <label>
+                    불량 증가 (EA)
+                    <input
+                      type="number"
+                      @bind="RejectIncrement"
+                      min="0"
+                      max="999999999999"
+                    />
+                  </label>
+                  <label>
+                    불량 사유
+                    <input
+                      @bind="RejectReason"
+                      maxlength="1000"
+                      /
+                    >
+                  </label>
+                </fieldset>
+                <button @onclick="AppendAsync">
+                  @(Pending is null ? "실적 저장" : "같은 요청 재전송·결과 확인")
+                </button>
+                @if (Pending is not null)
+                {
+                  <p>응답 확인 전에는 같은 UUID로 재전송합니다. 새로고침 전 결과를 확인해 주세요.</p>
+                }
+                <label>
+                  제출 사유 (목표 수량과 다르면 필수)
+                  <input
+                    @bind="CompletionReason"
+                    maxlength="1000"
+                    /
+                  >
+                </label>
+                <button
+                  disabled="@(Pending is not null)"
+                  @onclick="SubmitAsync"
+                >제출</button>
+              }
+
+            </div>
+            @* 미확인 취소 요청은 현재 탭·작업 상태와 관계없이 다시 확인할 수 있다. *@
+            <div hidden="@(!ReversalPending && ShownTab() != "entry")">
+              <PreSubmitReversal
+                Order="Selected"
+                IsWorker="Worker"
+                CurrentUserId="@User!.UserId"
+                Changed="LifecycleChangedAsync"
+                PendingChanged="pending => ReversalPending = pending"
+                BusyChanged='busy => ChildBusyChanged("reversal", busy)'
+              />
+            </div>
+            <div
+              class="detail-panel"
+              role="tabpanel"
+              hidden="@(ShownTab() != "ops")"
+            >
+              <OrderOperations
+                Order="Selected"
+                IsAdmin="Admin"
+                IsWorker="Worker"
+                Changed="LifecycleChangedAsync"
+                BusyChanged='busy => ChildBusyChanged("ops", busy)'
+              />
+            </div>
+            <div
+              class="detail-panel"
+              role="tabpanel"
+              hidden="@(ShownTab() != "draft")"
+            >
+              <OrderDraftEditor
+                Order="Selected"
+                IsAdmin="Admin"
+                Changed="LifecycleChangedAsync"
+                BusyChanged='busy => ChildBusyChanged("draft", busy)'
+              />
+            </div>
+          </section>
+        }
+      </div>
+    </fieldset>
+  }
+</main>
+@code {
+    private SessionUser? User;
+    private bool Admin => User?.Roles.Contains("ADMIN") == true;
+    private bool Worker => !Admin && User?.Roles.Contains("WORKER") == true;
+    private string RoleLabel => Admin ? "관리자" : "작업자";
+    private string Message = "";
+    private bool Busy;
+    private ProductChoice[] Products = [];
+    private EquipmentChoice[] Equipment = [];
+    private UserChoice[] Workers = [];
+    private OrderView[] OrderRows = [];
+    private OrderView? Selected;
+
+    // 작성 팝업의 집계 방식(MANUAL/AUTO)과 AUTO일 때 고른 COUNTER 매핑.
+    private string CountMode = "MANUAL";
+    private string CounterMappingId = "";
+
+    private bool IsAuto => Selected?.CountMode == "AUTO";
+
+    // AUTO 작업 상세 자동 갱신(3초). 설비 카운터가 들어오면 수량·기준 상태가 바뀌기 때문이다.
+    // 처리 중(Busy)·자식 전송 중·미확인 실적이 있을 때는 건너뛰고, 조회 중에 사용자 작업이 시작되면
+    // 결과를 버린다. 화면 상태 문구·잠금(Busy)은 건드리지 않고 입력값도 그대로 둔다.
+    private PeriodicTimer? AutoTimer;
+    private int ActionCount;
+
+    private async Task AutoRefreshLoopAsync()
+    {
+        AutoTimer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+        try
+        {
+            while (await AutoTimer.WaitForNextTickAsync())
+            {
+                await InvokeAsync(RefreshAutoAsync);
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
+    private bool AutoQuiet => !Busy && !ChildBusy && Pending is null;
+
+    private async Task RefreshAutoAsync()
+    {
+        var shown = Selected;
+        if (shown is null || shown.CountMode != "AUTO"
+            || shown.Status is not ("RUNNING" or "PAUSED") || !AutoQuiet)
+        {
+            return;
+        }
+
+        var actions = ActionCount;
+        try
+        {
+            var latest = await Api.GetAsync<OrderView>("api/v1/orders/" + shown.OrderId);
+            // 정상 AUTO 누적은 작업 Version을 올리지 않는다. 수집 진행 토큰(LastTelemetryId)이 바뀌면
+            // 자동 원장·합계도 바뀌었을 수 있으므로 원장을 다시 읽는다.
+            var versionMoved = latest.Version != shown.Version;
+            var ledgerMoved = versionMoved
+                || latest.AutoCounter?.LastTelemetryId != shown.AutoCounter?.LastTelemetryId;
+            if (!ledgerMoved && latest.AutoCounter == shown.AutoCounter
+                && latest.CounterInvalid == shown.CounterInvalid)
+            {
+                return;
+            }
+
+            PageResult<EntryView>? page = null;
+            if (ledgerMoved)
+            {
+                page = await Api.GetAsync<PageResult<EntryView>>(
+                    "api/v1/orders/" + shown.OrderId + "/entries"
+                );
+            }
+
+            // 조회하는 동안 사용자가 다른 일을 시작했거나 작업을 바꿨으면 반영하지 않는다.
+            if (actions != ActionCount || Selected?.OrderId != shown.OrderId || !AutoQuiet)
+            {
+                return;
+            }
+
+            Selected = latest;
+            if (page is not null)
+            {
+                Entries = page.Items.ToList();
+                EntryCursor = page.NextCursor;
+            }
+
+            StateHasChanged();
+        }
+        catch (Exception)
+        {
+            // 일시 오류는 다음 주기에 다시 읽는다(화면 문구는 사용자 작업 결과만 보여 준다).
+        }
+    }
+
+    public void Dispose()
+    {
+        AutoTimer?.Dispose();
+    }
+
+    // 상세 탭. 다른 작업을 고르면 기본 탭으로 돌아가고, 상태가 바뀌어 지금 탭이 없어지면
+    // 기본 탭을 보인다(작업자가 진행 중인 작업이면 실적·제출, 그 밖에는 기본).
+    private string DetailTab = "basic";
+    private string? DetailTabFor;
+
+    private IEnumerable<string> DetailTabs()
+    {
+        yield return "basic";
+        if (Worker && Selected!.Status is "RUNNING" or "PAUSED")
+        {
+            yield return "entry";
+        }
+
+        if (Selected!.Status is "RUNNING" or "PAUSED" or "SUBMITTED" or "CLOSED")
+        {
+            yield return "ops";
+        }
+
+        if (Admin && Selected.Status is "DRAFT" or "RELEASED")
+        {
+            yield return "draft";
+        }
+    }
+
+    private static string DetailTabLabel(string tab) => tab switch
+    {
+        "entry" => "실적·제출",
+        "ops" => "중지·정정",
+        "draft" => "초안·취소",
+        _ => "기본"
+    };
+
+    // 렌더 중에 부른다. 같은 작업에서 중지·재개처럼 상태만 바뀌면 보던 탭을 유지한다.
+    private string ShownTab()
+    {
+        var tabs = DetailTabs().ToArray();
+        var fallback = tabs.Contains("entry") ? "entry" : "basic";
+        if (Selected!.OrderId != DetailTabFor)
+        {
+            DetailTabFor = Selected.OrderId;
+            DetailTab = fallback;
+        }
+
+        return tabs.Contains(DetailTab) ? DetailTab : fallback;
+    }
+
+    private void ShowDetailTab(string tab)
+    {
+        if (!ChildBusy)
+        {
+            DetailTab = tab;
+        }
+    }
+
+    // 상세 안 구성 요소(초안·제출 전 취소·운영)가 요청을 처리 중인지. 처리 중에 다른 작업을 열면
+    // 그 요청의 후속 조회가 새 작업 화면에 섞일 수 있으므로, 끝날 때까지 탭·작업 전환을 막는다.
+    private readonly HashSet<string> BusyChildren = [];
+    private bool ChildBusy => BusyChildren.Count > 0;
+    private bool ReversalPending;
+
+    private void ChildBusyChanged(string child, bool busy)
+    {
+        if (busy)
+        {
+            BusyChildren.Add(child);
+        }
+        else
+        {
+            BusyChildren.Remove(child);
+        }
+    }
+
+    // 작업지시 작성 팝업(관리자). 저장에 성공하면 닫고 새 작업 상세를 연다.
+    private bool CreateOpen;
+
+    private void OpenCreate()
+    {
+        CreateOpen = true;
+    }
+
+    private void CloseCreate()
+    {
+        CreateOpen = false;
+    }
+
+    private void CloseCreateOnEscape(KeyboardEventArgs args)
+    {
+        if (args.Key == "Escape")
+        {
+            CreateOpen = false;
+        }
+    }
+    private List<EntryView> Entries = [];
+    private string? NextCursor;
+    private string? EntryCursor;
+    private string ProductId = "";
+    private string EquipmentId = "";
+    private string AssigneeId = "";
+    private string OperationLabel = "";
+    private long TargetQty = 100;
+    private DateTime PlannedStart = DateTime.UtcNow.AddHours(9);
+    private DateTime PlannedEnd = DateTime.UtcNow.AddHours(10);
+    private string ChecklistText = "작업 전 설비 점검";
+    private long TotalIncrement;
+    private long RejectIncrement;
+    private string RejectReason = "";
+    private string CompletionReason = "";
+    private string CloseReason = "";
+    private EntryBatch? Pending;
+    protected override async Task OnInitializedAsync()
+    {
+        await RunAsync(
+            async () =>
+            {
+                User = await Api.GetAsync<SessionUser>("api/v1/auth/me");
+                if (Admin)
+                {
+                    Products = await ChoicesAsync<ProductChoice>("products?active=true");
+                    Equipment = await ChoicesAsync<EquipmentChoice>("equipment?active=true");
+                    Workers = await ChoicesAsync<UserChoice>(
+                        "users?role=WORKER&active=true&assignable=true"
+                    );
+                }
+
+                await LoadListAsync();
+            }
+        );
+
+        // AUTO 작업 상세 자동 갱신을 시작한다(페이지가 닫히면 Dispose에서 멈춘다).
+        _ = AutoRefreshLoopAsync();
+    }
+
+    private async Task<T[]> ChoicesAsync<T>(string path)
+    {
+        var items = new List<T>();
+        string? cursor = null;
+        do
+        {
+            var suffix = cursor is null ? "" : "&cursor=" + cursor;
+            var page = await Api.GetAsync<PageResult<T>>("api/v1/" + path + suffix);
+            items.AddRange(page.Items);
+            cursor = page.NextCursor;
+        }
+        while (cursor is not null);
+        return items.ToArray();
+    }
+
+    private async Task RunAsync(Func<Task> action)
+    {
+        if (Busy)
+        {
+            return;
+        }
+        ActionCount++;
+        Busy = true;
+        Message = "처리 중입니다.";
+        try
+        {
+            await action();
+            Message = "완료했습니다.";
+        }
+        catch (Exception error)
+        {
+            Message = error is HttpRequestException
+                ? "네트워크 오류입니다. 저장 결과를 조회한 뒤 재시도해 주세요."
+                : error.Message;
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    private async Task LoadListAsync(string? cursor = null)
+    {
+        var path = "api/v1/orders?limit=25" + (cursor is null ? "" : "&cursor=" + cursor);
+        var page = await Api.GetAsync<PageResult<OrderView>>(path);
+        OrderRows = page.Items;
+        NextCursor = page.NextCursor;
+    }
+
+    private Task ReloadAsync() => RunAsync(
+        async () =>
+        {
+            User = await Api.GetAsync<SessionUser>("api/v1/auth/me");
+            await LoadListAsync();
+            if (Selected is not null)
+            {
+                await LoadSelectedAsync(Selected.OrderId);
+            }
+        }
+    );
+
+    private Task NextAsync() => RunAsync(() => LoadListAsync(NextCursor));
+    private Task SelectAsync(string id) => RunAsync(
+        async () =>
+        {
+            if (Pending is not null)
+            {
+                throw new InvalidOperationException("먼저 미확인 실적 요청의 결과를 확인해 주세요.");
+            }
+
+            await LoadSelectedAsync(id);
+        }
+    );
+
+    private async Task LoadSelectedAsync(string id)
+    {
+        if (ChildBusy && Selected is not null && Selected.OrderId != id)
+        {
+            throw new InvalidOperationException("진행 중인 상세 요청이 끝난 뒤 다른 작업을 열어 주세요.");
+        }
+
+        Selected = await Api.GetAsync<OrderView>("api/v1/orders/" + id);
+        var page = await Api.GetAsync<PageResult<EntryView>>("api/v1/orders/" + id + "/entries");
+        Entries = page.Items.ToList();
+        EntryCursor = page.NextCursor;
+    }
+
+    private Task LifecycleChangedAsync() => RunAsync(async () =>
+    {
+        if (Selected is not null)
+        {
+            await LoadSelectedAsync(Selected.OrderId);
+        }
+        await LoadListAsync();
+    });
+
+    private Task MoreEntriesAsync() => RunAsync(
+        async () =>
+        {
+            var path = $"api/v1/orders/{Selected!.OrderId}/entries?cursor={EntryCursor}";
+            var page = await Api.GetAsync<PageResult<EntryView>>(path);
+            Entries.AddRange(page.Items);
+            EntryCursor = page.NextCursor;
+        }
+    );
+
+    private Task CreateAsync() => RunAsync(
+        async () =>
+        {
+            var checks = ChecklistText.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(
+                (label, index) => new ChecklistDefinition(
+                    index + 1,
+                    label.Trim(),
+                    true
+                )
+            ).ToArray();
+            if (CountMode == "AUTO" && CounterMappingId == "")
+            {
+                throw new InvalidOperationException("AUTO 집계는 카운터 매핑을 선택해야 합니다.");
+            }
+
+            var input = new OrderCreate(
+                ProductId,
+                EquipmentId,
+                AssigneeId,
+                OperationLabel,
+                TargetQty,
+                CountMode,
+                CountMode == "AUTO" ? CounterMappingId : null,
+                UtcPlan(PlannedStart),
+                UtcPlan(PlannedEnd),
+                checks
+            );
+            var order = await Api.SendAsync<OrderView>("api/v1/orders", input);
+            CreateOpen = false;
+            await LoadListAsync();
+            await LoadSelectedAsync(order.OrderId);
+        }
+    );
+
+    private Task CommandAsync(string action) => RunAsync(
+        async () =>
+        {
+            var id = Selected!.OrderId;
+            Selected = await Api.SendAsync<OrderView>(
+                $"api/v1/orders/{id}/{action}",
+                new Command(Selected.Version)
+            );
+            await LoadListAsync();
+        }
+    );
+
+    private Task CheckAsync(ChecklistItem item, ChangeEventArgs args) => RunAsync(
+        async () =>
+        {
+            var input = new ChecklistUpdate(
+                Selected!.Version,
+                [
+                    new CheckInput(
+                        item.CheckId,
+                        args.Value is true,
+                        item.Comment
+                    )
+                ]
+            );
+            Selected = await Api.SendAsync<OrderView>(
+                $"api/v1/orders/{Selected.OrderId}/checklist",
+                input,
+                true
+            );
+        }
+    );
+
+    private Task AppendAsync() => RunAsync(
+        async () =>
+        {
+            if (Pending is null)
+            {
+                var entries = new List<EntryInput>();
+                var now = await Api.GetServerTimeAsync();
+                if (TotalIncrement < 0 || RejectIncrement < 0)
+                {
+                    throw new InvalidOperationException("수량은 0 이상이어야 합니다.");
+                }
+
+                if (TotalIncrement > 0 && !IsAuto)
+                {
+                    entries.Add(
+                        new EntryInput(
+                            Guid.NewGuid().ToString(),
+                            "TOTAL",
+                            TotalIncrement,
+                            null,
+                            null,
+                            null,
+                            now
+                        )
+                    );
+                }
+
+                if (RejectIncrement > 0)
+                {
+                    entries.Add(
+                        new EntryInput(
+                            Guid.NewGuid().ToString(),
+                            "REJECT",
+                            RejectIncrement,
+                            null,
+                            null,
+                            RejectReason,
+                            now
+                        )
+                    );
+                }
+
+                if (entries.Count == 0)
+                {
+                    throw new InvalidOperationException(
+                        IsAuto ? "추가할 불량 수량을 입력해 주세요." : "추가할 수량을 입력해 주세요."
+                    );
+                }
+
+                Pending = new EntryBatch(Selected!.Version, entries.ToArray());
+            }
+
+            try
+            {
+                await Api.SendAsync<EntryBatchResult>(
+                    $"api/v1/orders/{Selected!.OrderId}/entries",
+                    Pending
+                );
+            }
+            catch (FactoryMES.Web.Client.ApiFault error) when (error.Status is >= 400 and < 500)
+            {
+                Pending = null;
+                await LoadSelectedAsync(Selected!.OrderId);
+                throw;
+            }
+
+            Pending = null;
+            TotalIncrement = 0;
+            RejectIncrement = 0;
+            await LoadSelectedAsync(Selected.OrderId);
+            await LoadListAsync();
+        }
+    );
+
+    private Task SubmitAsync() => RunAsync(
+        async () =>
+        {
+            Selected = await Api.SendAsync<OrderView>(
+                $"api/v1/orders/{Selected!.OrderId}/submit",
+                new SubmitRequest(Selected.Version, CompletionReason)
+            );
+            await LoadListAsync();
+        }
+    );
+
+    private Task CloseAsync() => RunAsync(
+        async () =>
+        {
+            Selected = await Api.SendAsync<OrderView>(
+                $"api/v1/orders/{Selected!.OrderId}/close",
+                new ReasonCommand(Selected.Version, CloseReason)
+            );
+            await LoadListAsync();
+        }
+    );
+
+    private static DateTime UtcPlan(DateTime kst)
+    {
+        var utc = DateTime.SpecifyKind(kst.AddHours(-9), DateTimeKind.Utc);
+        return utc.AddTicks(-(utc.Ticks % 10));
+    }
+
+    private static string Kst(DateTime utc) => utc.AddHours(9).ToString("yyyy-MM-dd HH:mm:ss");
+}

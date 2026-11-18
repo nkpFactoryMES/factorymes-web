@@ -1,0 +1,568 @@
+@using FactoryMES.Web.Client
+@inject MesApi Api
+
+@* 작업 중지·재개와 마감 전 실적 정정 화면.
+   권한·상태 검사는 서버가 최종 판단하고, 이 컴포넌트는 가능한 버튼만 보여 준다. *@
+<section class="operations">
+  <h3>작업 운영</h3>
+  <p role="status">@Message</p>
+
+  <fieldset disabled="@Busy">
+    @* 1. 중지·재개: 담당 작업자만 조작한다. 관리자는 상태만 본다. *@
+    @if (Order.Status == "RUNNING" && IsWorker)
+    {
+      <form
+        @onsubmit="PauseAsync"
+        @onsubmit:preventDefault="true"
+      >
+        <h4>작업 중지</h4>
+        <label>
+          중지 사유
+          <select
+            @bind="PauseReasonCode"
+            required
+          >
+            @foreach (var reason in PauseReasons)
+            {
+              <option value="@reason.Code">@reason.Label</option>
+            }
+          </select>
+        </label>
+        <label>
+          메모 @(PauseReasonCode == "OTHER" ? "(기타 사유는 필수)" : "(선택)")
+          <input
+            @bind="PauseNote"
+            maxlength="1000"
+            required="@(PauseReasonCode == "OTHER")"
+          />
+        </label>
+        <label>
+          관련 경보 ID (선택, 같은 설비의 경보만)
+          <input
+            @bind="PauseAlarmId"
+            inputmode="numeric"
+            maxlength="19"
+          />
+        </label>
+        <button type="submit">작업 중지</button>
+      </form>
+    }
+    else if (Order.Status == "PAUSED")
+    {
+      <p>작업이 중지된 상태입니다. 설비 점유는 유지됩니다.</p>
+      @if (IsWorker)
+      {
+        <button @onclick="ResumeAsync">작업 재개</button>
+      }
+    }
+
+    @* 2. 마감 전 실적 정정: 제출된 작업에서만 쓴다. *@
+    @if (Order.Status is "SUBMITTED" or "CLOSED")
+    {
+      <h4>실적 정정</h4>
+
+      @if (Order.Status == "SUBMITTED" && IsAdmin && OpenCorrection is null)
+      {
+        <form
+          @onsubmit="OpenCorrectionAsync"
+          @onsubmit:preventDefault="true"
+        >
+          <label>
+            정정 요청 사유
+            <input
+              @bind="CorrectionReason"
+              maxlength="1000"
+              required
+            />
+          </label>
+          <button type="submit">정정 요청</button>
+        </form>
+      }
+
+      @if (Order.Status == "SUBMITTED" && IsAdmin && OpenCorrection is not null)
+      {
+        <form
+          @onsubmit="ResolveCorrectionAsync"
+          @onsubmit:preventDefault="true"
+        >
+          <p>열린 정정 요청: @OpenCorrection.Reason</p>
+          <label>
+            확인 메모 (정정이 필요 없었던 경우도 이유를 적습니다)
+            <input
+              @bind="ResolutionNote"
+              maxlength="1000"
+              required
+            />
+          </label>
+          <button type="submit">정정 확인 완료</button>
+        </form>
+      }
+
+      @if (Order.Status == "SUBMITTED" && IsWorker && OpenCorrection is not null)
+      {
+        <form
+          @onsubmit="SaveCorrectionEntriesAsync"
+          @onsubmit:preventDefault="true"
+        >
+          <p>정정 요청 #@OpenCorrection.CorrectionId: @OpenCorrection.Reason</p>
+          <fieldset disabled="@(Pending is not null)">
+            <label>
+              취소할 원본 실적 (선택)
+              <select @bind="ReverseEntryId">
+                <option value="">취소하지 않음</option>
+                @foreach (var entry in ReversibleEntries)
+                {
+                  <option value="@entry.EntryId">
+                    @Kst(entry.OccurredAt) · @entry.Kind @entry.Qty EA
+                  </option>
+                }
+              </select>
+            </label>
+            @* AUTO 작업의 총수량은 설비 카운터만 쌓는다. 정정에서도 수동 총수량을 넣지 않는다. *@
+            @if (Order.CountMode != "AUTO")
+            {
+              <label>
+                추가 총수량 (EA)
+                <input
+                  type="number"
+                  @bind="AddTotal"
+                  min="0"
+                  max="999999999999"
+                />
+              </label>
+            }
+            <label>
+              추가 불량 (EA)
+              <input
+                type="number"
+                @bind="AddReject"
+                min="0"
+                max="999999999999"
+              />
+            </label>
+            <label>
+              정정 사유
+              <input
+                @bind="EntryReason"
+                maxlength="1000"
+                required
+              />
+            </label>
+          </fieldset>
+          <button type="submit">
+            @(Pending is null ? "정정 실적 저장" : "같은 요청 재전송·결과 확인")
+          </button>
+          @if (Pending is not null)
+          {
+            <p>응답을 확인하기 전에는 같은 UUID로 다시 보냅니다. 새 요청을 만들지 않습니다.</p>
+          }
+        </form>
+      }
+
+      @if (Corrections.Count == 0)
+      {
+        <p>정정 요청 이력이 없습니다.</p>
+      }
+      else
+      {
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>상태</th>
+                <th>요청 사유</th>
+                <th>요청자</th>
+                <th>확인자 · 확인 시각</th>
+              </tr>
+            </thead>
+            <tbody>
+              @foreach (var correction in Corrections)
+              {
+                <tr>
+                  <td>@correction.Status</td>
+                  <td>@correction.Reason</td>
+                  <td>@correction.RequestedBy</td>
+                  <td>
+                    @(correction.ResolvedBy is null
+                      ? "-"
+                      : $"{correction.ResolvedBy} · {Kst(correction.ResolvedAt!.Value)}")
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      }
+
+      @if (CorrectionCursor is not null)
+      {
+        <button @onclick="MoreCorrectionsAsync">정정 이력 더 보기</button>
+      }
+    }
+  </fieldset>
+</section>
+
+@code {
+    [Parameter, EditorRequired]
+    public OrderView Order { get; set; } = default!;
+
+    [Parameter]
+    public bool IsAdmin { get; set; }
+
+    [Parameter]
+    public bool IsWorker { get; set; }
+
+    [Parameter]
+    public EventCallback Changed { get; set; }
+
+    // 전송·재조회 중임을 부모에 알린다. 부모는 그동안 상세 탭과 다른 작업 열기를 막는다.
+    [Parameter]
+    public EventCallback<bool> BusyChanged { get; set; }
+
+    private static readonly (string Code, string Label)[] PauseReasons =
+    [
+        ("SETUP", "작업 준비·교체"),
+        ("MATERIAL", "자재 대기"),
+        ("QUALITY", "품질 확인"),
+        ("BREAKDOWN", "설비 고장"),
+        ("OTHER", "기타")
+    ];
+
+    private string Message = "";
+    private bool Busy;
+
+    private string PauseReasonCode = "SETUP";
+    private string PauseNote = "";
+    private string PauseAlarmId = "";
+
+    private List<CorrectionView> Corrections = [];
+    private string? CorrectionCursor;
+    private CorrectionView? OpenCorrection => Corrections.FirstOrDefault(x => x.Status == "OPEN");
+    private string CorrectionReason = "";
+    private string ResolutionNote = "";
+
+    private List<EntryView> Entries = [];
+    private string ReverseEntryId = "";
+    private long AddTotal;
+    private long AddReject;
+    private string EntryReason = "";
+
+    // 응답을 확인하지 못한 정정 실적 요청. 같은 작업에서만 같은 UUID·본문으로 다시 보낸다.
+    private EntryBatch? Pending;
+    private string? PendingOrderId;
+
+    private string? LoadedKey;
+
+    // 원본 실적 중 아직 취소되지 않은 TOTAL·REJECT만 역분개 대상이다.
+    // 설비 자동(Source=AUTO) TOTAL은 정정에서도 역분개할 수 없다(수동 불량만 정정 대상).
+    private IEnumerable<EntryView> ReversibleEntries => Entries
+        .Where(x => x.Source != "AUTO")
+        .Where(x => x.Kind is "TOTAL" or "REJECT")
+        .Where(x => !Entries.Any(r => r.Kind == "REVERSAL" && r.ReversalOf == x.EntryId));
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // 부모가 같은 작업·같은 버전을 다시 넘기면 다시 읽지 않는다.
+        var key = $"{Order.OrderId}:{Order.Version}:{Order.Status}";
+        if (key == LoadedKey)
+        {
+            return;
+        }
+
+        if (PendingOrderId is not null && PendingOrderId != Order.OrderId)
+        {
+            Message = "다른 작업의 정정 요청 결과가 확인되지 않았습니다. 그 작업을 다시 열어 확인해 주세요.";
+        }
+
+        // 버튼 처리(RunAsync) 중에 부모가 새 작업을 넘겨도 목록은 다시 읽어야 하므로 Busy와 분리한다.
+        // 읽기에 성공했을 때만 LoadedKey를 기록해, 실패하면 같은 버전으로 새로고침해도 다시 시도한다.
+        try
+        {
+            await LoadAsync();
+            LoadedKey = key;
+        }
+        catch (Exception error)
+        {
+            LoadedKey = null;
+            Message = error.Message;
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        if (Order.Status is "SUBMITTED" or "CLOSED")
+        {
+            await LoadCorrectionsAsync(null);
+        }
+        else
+        {
+            Corrections = [];
+            CorrectionCursor = null;
+        }
+
+        Entries = IsWorker && Order.Status == "SUBMITTED"
+            ? await AllEntriesAsync()
+            : [];
+    }
+
+    private async Task LoadCorrectionsAsync(string? cursor)
+    {
+        var path = $"api/v1/orders/{Order.OrderId}/corrections?limit=20"
+            + (cursor is null ? "" : "&cursor=" + cursor);
+        var page = await Api.GetAsync<PageResult<CorrectionView>>(path);
+
+        // 첫 페이지는 새 목록으로 한 번에 바꾼다. 조회 중에 목록이 비어 보이면
+        // 열린 정정이 없는 것처럼 "정정 요청" 버튼이 잠깐 나타나기 때문이다.
+        Corrections = cursor is null
+            ? page.Items.ToList()
+            : Corrections.Concat(page.Items).ToList();
+        CorrectionCursor = page.NextCursor;
+    }
+
+    private async Task<List<EntryView>> AllEntriesAsync()
+    {
+        var items = new List<EntryView>();
+        string? cursor = null;
+        do
+        {
+            var path = $"api/v1/orders/{Order.OrderId}/entries"
+                + (cursor is null ? "" : "?cursor=" + cursor);
+            var page = await Api.GetAsync<PageResult<EntryView>>(path);
+            items.AddRange(page.Items);
+            cursor = page.NextCursor;
+        }
+        while (cursor is not null);
+
+        return items;
+    }
+
+    private Task MoreCorrectionsAsync() => RunAsync(() => LoadCorrectionsAsync(CorrectionCursor));
+
+    private Task PauseAsync() => RunAsync(
+        async () =>
+        {
+            var input = new PauseRequest(
+                Order.Version,
+                PauseReasonCode,
+                string.IsNullOrWhiteSpace(PauseNote) ? null : PauseNote.Trim(),
+                string.IsNullOrWhiteSpace(PauseAlarmId) ? null : PauseAlarmId.Trim()
+            );
+            await Api.SendAsync<OrderView>($"api/v1/orders/{Order.OrderId}/pause", input);
+
+            PauseNote = "";
+            PauseAlarmId = "";
+            await Changed.InvokeAsync();
+        }
+    );
+
+    private Task ResumeAsync() => RunAsync(
+        async () =>
+        {
+            await Api.SendAsync<OrderView>(
+                $"api/v1/orders/{Order.OrderId}/resume",
+                new Command(Order.Version)
+            );
+            await Changed.InvokeAsync();
+        }
+    );
+
+    private Task OpenCorrectionAsync() => RunAsync(
+        async () =>
+        {
+            await Api.SendAsync<CorrectionView>(
+                $"api/v1/orders/{Order.OrderId}/corrections",
+                new CorrectionOpen(Order.Version, CorrectionReason.Trim())
+            );
+
+            CorrectionReason = "";
+            await Changed.InvokeAsync();
+        }
+    );
+
+    private Task ResolveCorrectionAsync() => RunAsync(
+        async () =>
+        {
+            // 작업자가 정정 실적을 넣었을 수 있으므로 최신 정정·작업 버전을 다시 읽는다.
+            await LoadCorrectionsAsync(null);
+            var open = OpenCorrection
+                ?? throw new InvalidOperationException("열린 정정 요청이 없습니다. 새로고침해 주세요.");
+
+            // 관리자가 보고 있는 작업 버전과 서버의 작업 버전이 다르면, 화면의 실적이 오래된 것이다.
+            // 최신 버전으로 그대로 확인하지 않고, 화면을 갱신한 뒤 다시 검토하게 한다.
+            if (open.OrderVersion != Order.Version)
+            {
+                await Changed.InvokeAsync();
+                throw new InvalidOperationException(
+                    "실적이 변경되었습니다. 갱신된 실적 원장을 다시 검토한 뒤 확인해 주세요."
+                );
+            }
+
+            await Api.SendAsync<CorrectionView>(
+                $"api/v1/corrections/{open.CorrectionId}/resolve",
+                new CorrectionResolve(
+                    open.Version,
+                    open.OrderVersion,
+                    ResolutionNote.Trim()
+                )
+            );
+
+            ResolutionNote = "";
+            await Changed.InvokeAsync();
+        }
+    );
+
+    private Task SaveCorrectionEntriesAsync() => RunAsync(
+        async () =>
+        {
+            if (Pending is null)
+            {
+                Pending = await BuildCorrectionBatchAsync();
+                PendingOrderId = Order.OrderId;
+            }
+
+            try
+            {
+                await Api.SendAsync<EntryBatchResult>(
+                    $"api/v1/orders/{PendingOrderId}/entries",
+                    Pending
+                );
+            }
+            catch (ApiFault error) when (error.Status is >= 400 and < 500)
+            {
+                // 서버가 확정적으로 거절했다. 입력을 고쳐 새 요청을 만들 수 있게 비운다.
+                Pending = null;
+                PendingOrderId = null;
+                throw;
+            }
+
+            // 네트워크 오류·5xx는 위에서 예외가 그대로 올라가 Pending이 남는다(같은 요청 재전송).
+            Pending = null;
+            PendingOrderId = null;
+            ReverseEntryId = "";
+            AddTotal = 0;
+            AddReject = 0;
+            EntryReason = "";
+            await Changed.InvokeAsync();
+        }
+    );
+
+    private async Task<EntryBatch> BuildCorrectionBatchAsync()
+    {
+        var open = OpenCorrection
+            ?? throw new InvalidOperationException("열린 정정 요청이 없습니다. 새로고침해 주세요.");
+        if (string.IsNullOrWhiteSpace(EntryReason))
+        {
+            throw new InvalidOperationException("정정 사유를 입력해 주세요.");
+        }
+
+        if (AddTotal < 0 || AddReject < 0)
+        {
+            throw new InvalidOperationException("수량은 0 이상이어야 합니다.");
+        }
+
+        var reason = EntryReason.Trim();
+        var now = await Api.GetServerTimeAsync();
+        var entries = new List<EntryInput>();
+
+        // 원본 취소(역분개)는 원본과 같은 수량으로 한 번만 한다.
+        if (ReverseEntryId != "")
+        {
+            var original = ReversibleEntries.SingleOrDefault(x => x.EntryId == ReverseEntryId)
+                ?? throw new InvalidOperationException("이미 취소됐거나 없는 원본 실적입니다.");
+            entries.Add(
+                NewEntry(
+                    "REVERSAL",
+                    original.Qty,
+                    original.EntryId,
+                    open,
+                    reason,
+                    now
+                )
+            );
+        }
+
+        if (AddTotal > 0 && Order.CountMode != "AUTO")
+        {
+            entries.Add(
+                NewEntry(
+                    "TOTAL",
+                    AddTotal,
+                    null,
+                    open,
+                    reason,
+                    now
+                )
+            );
+        }
+
+        if (AddReject > 0)
+        {
+            entries.Add(
+                NewEntry(
+                    "REJECT",
+                    AddReject,
+                    null,
+                    open,
+                    reason,
+                    now
+                )
+            );
+        }
+
+        if (entries.Count == 0)
+        {
+            throw new InvalidOperationException("취소할 원본이나 추가할 수량을 입력해 주세요.");
+        }
+
+        return new EntryBatch(Order.Version, entries.ToArray());
+    }
+
+    private static EntryInput NewEntry(
+        string kind,
+        long qty,
+        string? reversalOf,
+        CorrectionView correction,
+        string reason,
+        DateTime occurredAt
+    ) => new(
+        Guid.NewGuid().ToString(),
+        kind,
+        qty,
+        reversalOf,
+        correction.CorrectionId,
+        reason,
+        occurredAt
+    );
+
+    private async Task RunAsync(Func<Task> action)
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        await BusyChanged.InvokeAsync(true);
+
+        // 이전 작업의 "완료했습니다."가 남아 있으면 새 작업이 끝난 것으로 오해할 수 있다.
+        Message = "처리 중입니다.";
+        try
+        {
+            await action();
+            Message = "완료했습니다.";
+        }
+        catch (Exception error)
+        {
+            Message = error is HttpRequestException
+                ? "네트워크 오류입니다. 결과를 확인하지 못했습니다. 같은 요청으로 다시 시도해 주세요."
+                : error.Message;
+        }
+        finally
+        {
+            Busy = false;
+            await BusyChanged.InvokeAsync(false);
+        }
+    }
+
+    private static string Kst(DateTime utc) => utc.AddHours(9).ToString("yyyy-MM-dd HH:mm:ss");
+}

@@ -1,0 +1,1292 @@
+@page "/deliveries"
+@using FactoryMES.Web.Client
+@using FactoryMES.Web.Client.Components
+@inject MesApi Api
+
+@* 알림 발송 이력(관리자 전용).
+   실제 외부 이메일·채팅 발송은 꺼져 있다. 결과는 두 가지 로컬 수신 기록뿐이다.
+   - Mock: 로컬 Mock 수신함(통신 없음).
+   - 로컬 통신 시연: 실제 SMTP로 Mailpit, 실제 HTTP(Webhook JSON)로 로컬 채팅 수신기에 전달한다.
+     주소·키·URL 입력은 없고 서버 고정값만 쓴다. 외부로 나가지 않는다.
+   발송 행의 실제 상태(PENDING/SENT/FAILED)와 Mock 수신 결과는 서로 다른 열로 보여 주며,
+   Mock 수신 완료를 SENT나 "발송 성공"으로 표시하지 않는다. 최종 판단은 서버가 한다. *@
+<PageTitle>알림 발송 이력 · FactoryMES</PageTitle>
+<main>
+  <header>
+    <div>
+      <p>FACTORY MES / DELIVERIES</p>
+      <h1>알림 발송 이력</h1>
+      <p>@(User is null ? "로그인 확인 중" : $"{User.Name} · {(Admin ? "관리자" : "작업자")}")</p>
+    </div>
+  </header>
+  <p role="status">@Message</p>
+
+  @if (User is not null && !Admin)
+  {
+    <p>알림 발송 이력은 관리자만 사용할 수 있습니다.</p>
+  }
+
+  @if (Admin)
+  {
+    <fieldset disabled="@Busy">
+      <p class="delivery-notice">
+        실제 이메일·채팅 발송은 꺼져 있습니다. "Mock 수신 완료"는 로컬 Mock 수신함에 기록됐다는 뜻이며,
+        실제 발송(SENT)이 아닙니다. 발송 행의 실제 상태는 그대로 PENDING으로 남습니다.
+        "로컬 수신 확인"은 이 PC 안의 Mailpit(SMTP)·로컬 채팅 수신기(HTTP)가 받았다는 뜻이며,
+        외부 메일·채팅으로 보낸 것이 아닙니다.
+      </p>
+
+      @* 1. Mock 시연 알림: 본인(관리자)에게만 테스트 알림을 만든다. *@
+      <section class="mock-demo">
+        <h2>Mock 시연 알림</h2>
+        <label>
+          Mock 시나리오
+          <select @bind="Scenario">
+            <option value="SUCCESS">SUCCESS · 첫 시도에 Mock 수신</option>
+            <option value="FAIL_ONCE">FAIL_ONCE · 첫 시도 실패, 관리자 재시도 후 수신</option>
+            <option value="TRANSIENT_ONCE">TRANSIENT_ONCE · 자동 재시도(5초) 후 수신</option>
+            <option value="ALWAYS_FAIL">ALWAYS_FAIL · 자동 재시도 3회 뒤 실패</option>
+            <option value="OUTBOX_FAIL_ONCE">
+              OUTBOX_FAIL_ONCE · Outbox 인계가 3회 실패, 관리자 재처리 후 인계
+            </option>
+            <option value="OUTBOX_ALWAYS_FAIL">
+              OUTBOX_ALWAYS_FAIL · Outbox 인계가 재처리 뒤에도 회차 3회 실패
+            </option>
+          </select>
+        </label>
+        <p class="hint">
+          시나리오는 Mock 전달기 동작을 고르는 시연 옵션입니다. 실제 서비스 장애나 네트워크를 조작하지 않습니다.
+        </p>
+        @if (PendingRequest is not null)
+        {
+          <p class="conflict-wait">
+            이전 시연 알림 요청의 결과를 확인하지 못했습니다. 같은 요청(같은 요청 ID)으로만 다시 보내 결과를 확인합니다.
+          </p>
+          <button
+            type="button"
+            @onclick="ResendMockAsync"
+          >같은 요청 다시 보내기</button>
+        }
+        else
+        {
+          <button
+            type="button"
+            @onclick="CreateMockAsync"
+          >시연 알림 만들기</button>
+        }
+      </section>
+
+      @* 1-1. 로컬 통신 시연: 같은 Inbox → Outbox → 발송 경로로 실제 SMTP·HTTP 로컬 수신기에 전달한다. *@
+      <section class="local-demo">
+        <h2>로컬 통신 시연 알림(SMTP·Webhook)</h2>
+        <label>
+          로컬 시나리오
+          <select @bind="LocalScenario">
+            <option value="SUCCESS">SUCCESS · Mailpit(SMTP)·채팅 수신기(HTTP) 모두 첫 시도에 수신</option>
+            <option value="CHAT_TRANSIENT_ONCE">
+              CHAT_TRANSIENT_ONCE · 채팅 수신기가 첫 요청을 429로 거절, 자동 재시도 후 수신
+            </option>
+            <option value="CHAT_ALWAYS_FAIL">
+              CHAT_ALWAYS_FAIL · 채팅 수신기가 계속 503, 자동 재시도 3회 뒤 실패
+            </option>
+            <option value="CHAT_PERMANENT_FAIL">
+              CHAT_PERMANENT_FAIL · 채팅 수신기가 400으로 거절, 재시도 없이 실패
+            </option>
+          </select>
+        </label>
+        <p class="hint">
+          본인(관리자)에게만 만듭니다. 이메일은 실제 SMTP로 이 PC의 Mailpit에, 채팅은 실제 HTTP로
+          로컬 채팅 수신기에 보냅니다. 주소·키·URL은 입력받지 않고 외부로 나가지 않습니다.
+          시나리오는 로컬 채팅 수신기의 응답만 바꿉니다(이메일은 항상 Mailpit으로 보냄).
+        </p>
+        @if (PendingLocalRequest is not null)
+        {
+          <p class="conflict-wait">
+            이전 로컬 시연 요청의 결과를 확인하지 못했습니다. 같은 요청(같은 요청 ID)으로만 다시 보내 결과를 확인합니다.
+          </p>
+          <button
+            type="button"
+            @onclick="ResendLocalAsync"
+          >같은 로컬 요청 다시 보내기</button>
+        }
+        else
+        {
+          <button
+            type="button"
+            @onclick="CreateLocalAsync"
+          >로컬 시연 알림 만들기</button>
+        }
+      </section>
+
+      <div
+        class="tabs"
+        role="tablist"
+        aria-label="발송 화면"
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected="@(Tab == "deliveries" ? "true" : "false")"
+          @onclick="ShowDeliveriesTab"
+        >발송 이력</button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected="@(Tab == "outbox" ? "true" : "false")"
+          @onclick="ShowOutboxTab"
+        >Outbox 인계</button>
+      </div>
+
+      @if (Tab == "deliveries")
+      {
+        @* 2. 발송 이력: 실제 상태와 Mock 결과를 나란히 보여 준다. *@
+        <section class="deliveries">
+          <h2>발송 이력</h2>
+          <div class="filters">
+            <label>
+              상태 필터
+              <select @bind="StatusFilter">
+                <option value="">전체</option>
+                <option value="PENDING">PENDING</option>
+                <option value="SENT">SENT</option>
+                <option value="FAILED">FAILED</option>
+              </select>
+            </label>
+            <label>
+              채널 필터
+              <select @bind="ChannelFilter">
+                <option value="">전체</option>
+                <option value="EMAIL">EMAIL</option>
+                <option value="CHAT">CHAT</option>
+              </select>
+            </label>
+            <label>
+              알림 ID
+              <input
+                @bind="NotificationFilter"
+                inputmode="numeric"
+                placeholder="전체"
+              />
+            </label>
+          </div>
+          <button @onclick="ReloadDeliveriesAsync">목록 새로고침</button>
+          @if (ListFailed)
+          {
+            <p class="conflict-wait">
+              최신 발송 이력을 읽지 못했습니다. 다시 조회하기 전에는 재시도를 보내지 않습니다.
+            </p>
+          }
+
+          @if (Rows.Count == 0)
+          {
+            <p>표시할 발송 이력이 없습니다.</p>
+          }
+          else
+          {
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>발송</th>
+                    <th>알림·수신자</th>
+                    <th>채널·가상 대상</th>
+                    <th>실제 상태</th>
+                    <th>수신 결과(Mock·로컬)</th>
+                    <th>시도</th>
+                    <th>다음 시도·보낸 시각</th>
+                    <th>오류</th>
+                    <th>작업</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @foreach (var delivery in Rows)
+                  {
+                    var mock = MockOf(delivery);
+                    var local = LocalOf(delivery);
+                    <tr class="delivery-@delivery.Status.ToLowerInvariant()">
+                      <td>#@delivery.DeliveryId · v@(delivery.Version)</td>
+                      <td>알림 #@delivery.NotificationId · 사용자 #@delivery.RecipientId</td>
+                      <td>@delivery.Channel · @delivery.DestinationKey</td>
+                      <td>
+                        <span class="badge @StatusClass(delivery.Status)">@delivery.Status</span>
+                      </td>
+                      <td>
+                        @if (local is not null)
+                        {
+                          <span class="local-outcome @local.Outcome.ToLowerInvariant()">
+                            @LocalLabel(local)
+                          </span>
+                        }
+                        else
+                        {
+                          var outcome = mock?.Outcome.ToLowerInvariant() ?? "unknown";
+                          <span class="mock-outcome @outcome">
+                            @MockLabel(mock)
+                          </span>
+                        }
+                      </td>
+                      <td>@delivery.Attempts</td>
+                      <td>
+                        @(delivery.SentAt is not null
+                          ? "보냄 " + Kst(delivery.SentAt.Value)
+                          : delivery.NextAttemptAt is not null
+                            ? "다음 " + Kst(delivery.NextAttemptAt.Value)
+                            : "-")
+                      </td>
+                      <td>@(delivery.LastError ?? "-")</td>
+                      <td>
+                        @if (local?.Outcome == "ACCEPTED")
+                        {
+                          <button @onclick="() => OpenLocalReceiptAsync(delivery.DeliveryId)">
+                            수신 내용
+                          </button>
+                        }
+                        else if (local is null && mock?.Outcome == "ACCEPTED")
+                        {
+                          <button @onclick="() => OpenReceiptAsync(delivery.DeliveryId)">
+                            수신 내용
+                          </button>
+                        }
+                        @if (delivery.Status == "FAILED")
+                        {
+                          <button @onclick="() => OpenRetry(delivery)">재시도</button>
+                        }
+                      </td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          }
+          @if (DeliveryCursor is not null)
+          {
+            <button @onclick="MoreDeliveriesAsync">발송 이력 더 보기</button>
+          }
+        </section>
+      }
+
+      @if (Tab == "outbox")
+      {
+        @* 3. Outbox 인계: DELIVERED는 로컬 전달기로 넘겼다는 뜻이며 이메일 발송 완료가 아니다. *@
+        <section class="outbox">
+          <h2>Outbox 인계 기록</h2>
+          <p class="hint">
+            DELIVERED는 이벤트를 로컬 전달기에 넘겼다는 뜻입니다. 이메일·채팅 발송 완료가 아닙니다.
+          </p>
+          <label>
+            Outbox 상태 필터
+            <select
+              value="@OutboxFilter"
+              @onchange="FilterOutboxAsync"
+            >
+              <option value="">전체</option>
+              <option value="PENDING">PENDING</option>
+              <option value="DELIVERED">DELIVERED</option>
+              <option value="FAILED">FAILED</option>
+            </select>
+          </label>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Outbox</th>
+                  <th>이벤트 종류</th>
+                  <th>대상</th>
+                  <th>상태</th>
+                  <th>시도</th>
+                  <th>인계·다음 시도</th>
+                  <th>오류</th>
+                  <th>작업</th>
+                </tr>
+              </thead>
+              <tbody>
+                @foreach (var item in Outbox)
+                {
+                  <tr class="outbox-@item.Status.ToLowerInvariant()">
+                    <td>#@item.OutboxId</td>
+                    <td>@item.Type</td>
+                    <td>#@item.AggregateId</td>
+                    <td>
+                      <span class="badge @StatusClass(item.Status)">@item.Status</span>
+                    </td>
+                    <td>@item.Attempts</td>
+                    <td>
+                      @(item.DeliveredAt is not null
+                        ? "인계 " + Kst(item.DeliveredAt.Value)
+                        : item.NextAttemptAt is not null
+                          ? "다음 " + Kst(item.NextAttemptAt.Value)
+                          : "-")
+                    </td>
+                    <td>@(item.LastError ?? "-")</td>
+                    <td>
+                      @if (item.Status == "FAILED")
+                      {
+                        <button @onclick="() => OpenOutboxRetryAsync(item)">재처리</button>
+                      }
+                    </td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+          <button @onclick="ReloadOutboxAsync">Outbox 새로고침</button>
+          @if (OutboxCursor is not null)
+          {
+            <button @onclick="MoreOutboxAsync">Outbox 더 보기</button>
+          }
+        </section>
+      }
+
+      @* 재시도 팝업: FAILED 발송만, 사유 필수. 충돌(409)이면 사유를 지키고 최신 목록을 다시 읽는다. *@
+      @if (RetryTarget is not null)
+      {
+        <div
+          class="modal-backdrop"
+          @onclick="CloseRetry"
+        ></div>
+        <form
+          class="modal retry-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label="@("발송 재시도 · #" + RetryTarget.DeliveryId)"
+          @onsubmit="RetryAsync"
+          @onsubmit:preventDefault="true"
+          @onkeydown="CloseOnEscape"
+        >
+          <div class="modal-bar">
+            <button
+              type="button"
+              class="modal-close"
+              @onclick="CloseRetry"
+            >닫기</button>
+          </div>
+          <p
+            class="modal-status"
+            role="status"
+          >@Message</p>
+          <h3>발송 재시도 · #@RetryTarget.DeliveryId</h3>
+          <p>
+            @RetryTarget.Channel · @RetryTarget.DestinationKey · 시도 @(RetryTarget.Attempts)회 ·
+            버전 @RetryTarget.Version · 오류 @(RetryTarget.LastError ?? "-")
+          </p>
+          <p class="hint">
+            재시도는 FAILED 발송을 다시 대기(PENDING)로 돌립니다. 지금까지의 시도 횟수는 그대로 남고,
+            즉시 성공을 보장하지 않습니다.
+          </p>
+          <label>
+            재시도 사유
+            <textarea
+              @bind="RetryReason"
+              maxlength="1000"
+            ></textarea>
+          </label>
+          <button
+            type="submit"
+            disabled="@ListFailed"
+          >재시도 보내기</button>
+          @if (ListFailed)
+          {
+            <button
+              type="button"
+              @onclick="ReloadDeliveriesAsync"
+            >최신 발송 이력 다시 조회</button>
+          }
+        </form>
+      }
+
+      @* Outbox 재처리 팝업: 발송 재시도와 다르다. 실패한 이벤트를 로컬 전달기로 "다시 인계 대기"시킬 뿐
+         이메일·채팅 발송 성공을 보장하지 않는다. 이벤트 원문은 고칠 수 없다. *@
+      @if (OutboxTarget is not null)
+      {
+        <div
+          class="modal-backdrop"
+          @onclick="CloseOutboxRetry"
+        ></div>
+        <form
+          class="modal outbox-retry-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label="@("Outbox 재처리 · #" + OutboxTarget.OutboxId)"
+          @onsubmit="SendOutboxRetryAsync"
+          @onsubmit:preventDefault="true"
+          @onkeydown="CloseOnEscape"
+        >
+          <div class="modal-bar">
+            <button
+              type="button"
+              @onclick="ReloadOutboxStateAsync"
+            >재처리 상태 다시 조회</button>
+            <button
+              type="button"
+              class="modal-close"
+              @onclick="CloseOutboxRetry"
+            >닫기</button>
+          </div>
+          <p
+            class="modal-status"
+            role="status"
+          >@Message</p>
+          <h3>Outbox 재처리 · #@OutboxTarget.OutboxId</h3>
+          <p class="hint">
+            최종 실패한 Outbox 이벤트를 로컬 전달기에 다시 넘기도록 대기(PENDING)로 돌립니다.
+            이벤트 원문·이벤트 ID·업무 버전은 바뀌지 않고 시도 횟수는 그대로 쌓입니다.
+            다시 자동 재시도(최대 3회)가 진행되며, 이메일·채팅 발송 성공을 보장하지 않습니다.
+          </p>
+          @if (OutboxStateFailed)
+          {
+            <p class="conflict-wait">
+              최신 재처리 상태를 읽지 못했습니다. 다시 조회하기 전에는 재처리를 보내지 않습니다.
+            </p>
+          }
+          @if (OutboxState is { } state)
+          {
+            var current = state.Event;
+            <dl class="outbox-facts">
+              <dt>이벤트</dt>
+              <dd>@current.Type · 대상 #@current.AggregateId</dd>
+              <dt>상태</dt>
+              <dd>
+                <span class="badge @StatusClass(current.Status)">@current.Status</span>
+                시도 @(current.Attempts)회
+              </dd>
+              <dt>다음 시도</dt>
+              <dd>
+                @(current.NextAttemptAt is null
+                  ? "없음(자동 재시도 끝)"
+                  : Kst(current.NextAttemptAt.Value))
+              </dd>
+              <dt>오류</dt>
+              <dd>@(current.LastError ?? "-")</dd>
+              <dt>재처리 가능</dt>
+              <dd>
+                @if (state.CanRetry)
+                {
+                  <span class="badge recovered">가능</span>
+                }
+                else
+                {
+                  <span class="badge closed">불가</span>
+                  @BlockText(state.BlockReason)
+                }
+              </dd>
+            </dl>
+          }
+          @if (OutboxNote != "")
+          {
+            <p class="conflict-wait">@OutboxNote</p>
+          }
+          @if (PendingOutboxRetry is not null)
+          {
+            <p class="conflict-wait">
+              이전 재처리 요청의 결과를 확인하지 못했습니다. 같은 요청(같은 요청 ID·상태·사유)으로만 다시 보냅니다.
+            </p>
+          }
+          <label>
+            재처리 사유
+            <textarea
+              @bind="OutboxReason"
+              maxlength="1000"
+              disabled="@(PendingOutboxRetry is not null)"
+            ></textarea>
+          </label>
+          <button
+            type="submit"
+            disabled="@(!CanSendOutboxRetry)"
+          >@(PendingOutboxRetry is null ? "재처리 요청" : "같은 재처리 요청 다시 보내기")</button>
+        </form>
+      }
+
+      @* 수신 내용 팝업(Mock·로컬 공통): 평문 그대로(Blazor가 이스케이프) 보여 준다. *@
+      @if (Receipt is not null)
+      {
+        var kind = Receipt.Local ? "로컬" : "Mock";
+        <div
+          class="modal-backdrop"
+          @onclick="CloseReceipt"
+        ></div>
+        <section
+          class="modal receipt-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label="@(kind + " 수신 내용 · #" + Receipt.DeliveryId)"
+          @onkeydown="CloseOnEscape"
+        >
+          <div class="modal-bar">
+            <button
+              type="button"
+              class="modal-close"
+              @onclick="CloseReceipt"
+            >닫기</button>
+          </div>
+          <h3>@kind 수신 내용 · 발송 #@Receipt.DeliveryId</h3>
+          @if (Receipt.Local)
+          {
+            <p class="hint">
+              @ProviderText(Receipt.Provider)가 실제로 받은 기록입니다.
+              외부로는 발송되지 않았고 발송 행의 실제 상태는 PENDING으로 남습니다.
+            </p>
+          }
+          else
+          {
+            <p class="hint">로컬 Mock 수신함 기록입니다. 실제로 발송되지 않았습니다.</p>
+          }
+          <dl>
+            <dt>수신 시각</dt>
+            <dd>@Kst(Receipt.AcceptedAt)</dd>
+            <dt>채널·가상 대상</dt>
+            <dd>@Receipt.Channel · @Receipt.DestinationKey</dd>
+            <dt>@kind 제공자</dt>
+            <dd>
+              @Receipt.Provider
+              @(Receipt.Local ? " · " + ProviderText(Receipt.Provider) : "")
+            </dd>
+            <dt>수신 ID</dt>
+            <dd>@Receipt.ReceiptId</dd>
+            <dt>본문 해시</dt>
+            <dd class="hash">@Receipt.MessageHash</dd>
+            <dt>제목</dt>
+            <dd>@Receipt.Subject</dd>
+          </dl>
+          <pre class="receipt-body">@Receipt.Body</pre>
+        </section>
+      }
+    </fieldset>
+  }
+</main>
+
+@code {
+    private SessionUser? User;
+    private bool Admin => User?.Roles.Contains("ADMIN") == true;
+    private string Message = "";
+    private bool Busy;
+
+    // 탭: 발송 이력(주 작업) / Outbox 인계 기록.
+    private string Tab = "deliveries";
+
+    private void ShowDeliveriesTab()
+    {
+        Tab = "deliveries";
+    }
+
+    private void ShowOutboxTab()
+    {
+        Tab = "outbox";
+    }
+
+    private string Scenario = "SUCCESS";
+
+    // 결과를 확인하지 못한 시연 요청. 같은 요청 ID·시나리오로만 다시 보낸다.
+    private MockNotificationRequest? PendingRequest;
+
+    // 로컬 통신 시연(SMTP·Webhook)의 시나리오와 결과 미확인 요청(같은 요청 ID로만 재전송).
+    private string LocalScenario = "SUCCESS";
+    private LocalNotificationRequest? PendingLocalRequest;
+
+    private List<DeliveryView> Rows = [];
+    private string? DeliveryCursor;
+    private readonly Dictionary<string, DeliveryMockStatus> MockStatuses = [];
+
+    // 로컬 통신 발송의 수신 결과(서버는 로컬 발송 행만 돌려준다).
+    private readonly Dictionary<string, LocalDeliveryStatus> LocalStatuses = [];
+    private string StatusFilter = "";
+    private string ChannelFilter = "";
+    private string NotificationFilter = "";
+
+    // 최신 목록 조회가 실패하면 재시도 전송을 막는다(낡은 버전으로 보내지 않게).
+    private bool ListFailed;
+
+    private List<OutboxView> Outbox = [];
+    private string? OutboxCursor;
+    private string OutboxFilter = "";
+
+    private DeliveryView? RetryTarget;
+    private string RetryReason = "";
+    private ShownReceipt? Receipt;
+
+    // 팝업에 보여 줄 수신 기록(Mock·로컬 공통 모양). Local이면 실제 SMTP/HTTP 로컬 수신 기록이다.
+    private sealed record ShownReceipt(
+        bool Local,
+        string DeliveryId,
+        string ReceiptId,
+        string Provider,
+        string Channel,
+        string DestinationKey,
+        string Subject,
+        string Body,
+        string MessageHash,
+        DateTime AcceptedAt
+    );
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RunAsync(
+            async () =>
+            {
+                User = await Api.GetAsync<SessionUser>("api/v1/auth/me");
+                if (!Admin)
+                {
+                    return;
+                }
+
+                await LoadDeliveriesAsync();
+                await LoadOutboxAsync();
+            }
+        );
+    }
+
+    // ---- 발송 이력 ----
+    private string DeliveryPath()
+    {
+        var path = "api/v1/deliveries?limit=50";
+        if (StatusFilter != "")
+        {
+            path += "&status=" + StatusFilter;
+        }
+
+        if (ChannelFilter != "")
+        {
+            path += "&channel=" + ChannelFilter;
+        }
+
+        if (NotificationFilter.Trim() != "")
+        {
+            path += "&notificationId=" + Uri.EscapeDataString(NotificationFilter.Trim());
+        }
+
+        return path;
+    }
+
+    // 목록과 Mock 결과를 모두 읽은 뒤에만 화면에 반영한다(일부만 바뀐 표를 보이지 않게).
+    private async Task LoadDeliveriesAsync()
+    {
+        try
+        {
+            var page = await Api.GetAsync<PageResult<DeliveryView>>(DeliveryPath());
+            var statuses = await MockStatusesAsync(page.Items);
+            var locals = await LocalStatusesAsync(page.Items);
+
+            // 행을 읽은 뒤 수신 결과를 읽는 사이에 수신 확인이 커밋되면, 수신 완료인데 행은 옛 값
+            // (마지막 오류·다음 시도 남음)으로 보일 수 있다. 그런 행이 있으면 목록만 한 번 더 읽는다.
+            if (Stale(page.Items, statuses, locals))
+            {
+                page = await Api.GetAsync<PageResult<DeliveryView>>(DeliveryPath());
+            }
+
+            Rows = page.Items.ToList();
+            DeliveryCursor = page.NextCursor;
+            MockStatuses.Clear();
+            foreach (var status in statuses)
+            {
+                MockStatuses[status.DeliveryId] = status;
+            }
+
+            LocalStatuses.Clear();
+            foreach (var status in locals)
+            {
+                LocalStatuses[status.DeliveryId] = status;
+            }
+
+            ListFailed = false;
+        }
+        catch (Exception)
+        {
+            ListFailed = true;
+            throw;
+        }
+    }
+
+    // 한 번에 최대 100건씩 묶어 조회한다(행마다 따로 부르지 않음).
+    private async Task<List<DeliveryMockStatus>> MockStatusesAsync(IEnumerable<DeliveryView> rows)
+    {
+        var result = new List<DeliveryMockStatus>();
+        foreach (var chunk in rows.Select(x => x.DeliveryId).Chunk(100))
+        {
+            var ids = string.Join(",", chunk);
+            result.AddRange(
+                await Api.GetAsync<DeliveryMockStatus[]>(
+                    "api/v1/delivery-mock-statuses?deliveryIds=" + ids
+                )
+            );
+        }
+
+        return result;
+    }
+
+    // 로컬 통신 발송의 수신 결과. 같은 방식으로 100건씩 묶어 조회한다.
+    private async Task<List<LocalDeliveryStatus>> LocalStatusesAsync(IEnumerable<DeliveryView> rows)
+    {
+        var result = new List<LocalDeliveryStatus>();
+        foreach (var chunk in rows.Select(x => x.DeliveryId).Chunk(100))
+        {
+            var ids = string.Join(",", chunk);
+            result.AddRange(
+                await Api.GetAsync<LocalDeliveryStatus[]>(
+                    "api/v1/delivery-local-statuses?deliveryIds=" + ids
+                )
+            );
+        }
+
+        return result;
+    }
+
+    // 수신 완료(Mock·로컬 ACCEPTED)인데 행에 마지막 오류나 다음 시도가 남아 있으면 옛 행이다.
+    private static bool Stale(
+        IEnumerable<DeliveryView> rows,
+        IEnumerable<DeliveryMockStatus> mock,
+        IEnumerable<LocalDeliveryStatus> local
+    )
+    {
+        var accepted = mock.Where(x => x.Outcome == "ACCEPTED").Select(x => x.DeliveryId)
+            .Concat(local.Where(x => x.Outcome == "ACCEPTED").Select(x => x.DeliveryId))
+            .ToHashSet();
+        return rows.Any(x => accepted.Contains(x.DeliveryId)
+            && (x.Attempts < 1 || x.LastError is not null || x.NextAttemptAt is not null));
+    }
+
+    private Task ReloadDeliveriesAsync() => RunAsync(
+        LoadDeliveriesAsync,
+        done: "발송 이력을 다시 읽었습니다."
+    );
+
+    private Task MoreDeliveriesAsync() => RunAsync(
+        async () =>
+        {
+            var page = await Api.GetAsync<PageResult<DeliveryView>>(
+                DeliveryPath() + "&cursor=" + Uri.EscapeDataString(DeliveryCursor!)
+            );
+            var statuses = await MockStatusesAsync(page.Items);
+            var locals = await LocalStatusesAsync(page.Items);
+            if (Stale(page.Items, statuses, locals))
+            {
+                page = await Api.GetAsync<PageResult<DeliveryView>>(
+                    DeliveryPath() + "&cursor=" + Uri.EscapeDataString(DeliveryCursor!)
+                );
+            }
+
+            Rows.AddRange(page.Items);
+            DeliveryCursor = page.NextCursor;
+            foreach (var status in statuses)
+            {
+                MockStatuses[status.DeliveryId] = status;
+            }
+
+            foreach (var status in locals)
+            {
+                LocalStatuses[status.DeliveryId] = status;
+            }
+        }
+    );
+
+    private DeliveryMockStatus? MockOf(DeliveryView delivery) =>
+        MockStatuses.TryGetValue(delivery.DeliveryId, out var status)
+            ? status with { Outcome = DisplayOutcome(delivery, status.Outcome) } : null;
+
+    private static string MockLabel(DeliveryMockStatus? status) => status?.Outcome switch
+    {
+        "ACCEPTED" => "Mock 수신 완료(실발송 아님) · " + Kst(status.AcceptedAt!.Value),
+        "WAITING" => "처리 대기",
+        "RETRY_WAIT" => "자동 재시도 대기",
+        "FAILED" => "Mock 수신 실패",
+        null => "-",
+        _ => status.Outcome
+    };
+
+    private LocalDeliveryStatus? LocalOf(DeliveryView delivery) =>
+        LocalStatuses.TryGetValue(delivery.DeliveryId, out var status)
+            ? status with { Outcome = DisplayOutcome(delivery, status.Outcome) } : null;
+
+    // ACK는 영수증이 권위다. 대기·실패는 버튼의 Version과 같은 원장 스냅샷으로 표시한다.
+    private static string DisplayOutcome(DeliveryView delivery, string outcome) =>
+        outcome == "ACCEPTED" ? outcome
+            : delivery.Status == "FAILED" ? "FAILED"
+            : delivery.NextAttemptAt is not null && delivery.LastError is not null
+                ? "RETRY_WAIT" : "WAITING";
+
+    // 로컬 통신 결과. 수신 확인도 실제 외부 발송(SENT)이 아니라고 함께 적는다.
+    private static string LocalLabel(LocalDeliveryStatus status) => status.Outcome switch
+    {
+        "ACCEPTED" => $"로컬 수신 확인(실발송 아님) · {ReceiverOf(status.ReceiptId)} · "
+            + Kst(status.AcceptedAt!.Value),
+        "WAITING" => "로컬 전달 대기",
+        "RETRY_WAIT" => "로컬 전달 자동 재시도 대기",
+        "FAILED" => "로컬 수신 실패",
+        _ => status.Outcome
+    };
+
+    // 수신 ID 접두어로 받은 곳을 보여 준다(smtp: Mailpit, webhook: 로컬 채팅 수신기).
+    private static string ReceiverOf(string? receiptId) => receiptId switch
+    {
+        { } id when id.StartsWith("smtp:", StringComparison.Ordinal) => "Mailpit(SMTP)",
+        { } id when id.StartsWith("webhook:", StringComparison.Ordinal) => "채팅 수신기(HTTP)",
+        _ => "로컬 수신기"
+    };
+
+    private static string ProviderText(string provider) => provider switch
+    {
+        "LOCAL_SMTP" => "로컬 Mailpit(SMTP)",
+        "LOCAL_WEBHOOK" => "로컬 채팅 수신기(HTTP Webhook)",
+        _ => provider
+    };
+
+    private static string StatusClass(string status) => status switch
+    {
+        "FAILED" => "critical",
+        "PENDING" => "info",
+        "DELIVERED" => "recovered",
+        "SENT" => "recovered",
+        _ => "closed"
+    };
+
+    // ---- Mock 시연 알림 ----
+    private Task CreateMockAsync()
+    {
+        // 새 요청마다 요청 ID를 새로 만든다. 결과를 모르면 이 요청을 그대로 남겨 같은 ID로만 재전송한다.
+        var request = new MockNotificationRequest(Guid.NewGuid().ToString(), Scenario);
+        return SendMockAsync(request);
+    }
+
+    private Task ResendMockAsync() => SendMockAsync(PendingRequest!);
+
+    private Task SendMockAsync(MockNotificationRequest request) => RunAsync(
+        async () =>
+        {
+            PendingRequest = request;
+            var result = await Api.SendAsync<MockNotificationResult>(
+                "api/v1/mock-notifications",
+                request
+            );
+            PendingRequest = null;
+
+            // 만든 알림만 보이도록 필터를 맞추고 다시 읽는다. 전달기 처리는 2초 주기라 잠시 뒤 새로고침한다.
+            NotificationFilter = result.NotificationId;
+            StatusFilter = "";
+            ChannelFilter = "";
+            await LoadDeliveriesAsync();
+        },
+        done: "시연 알림을 만들었습니다. 전달기가 처리하면 '목록 새로고침'으로 결과를 확인해 주세요.",
+        keepPendingOnConflict: false
+    );
+
+    // ---- 로컬 통신 시연 알림 ----
+    private Task CreateLocalAsync()
+    {
+        // 새 요청마다 요청 ID를 새로 만든다. 결과를 모르면 그대로 남겨 같은 ID로만 재전송한다.
+        var request = new LocalNotificationRequest(Guid.NewGuid().ToString(), LocalScenario);
+        return SendLocalAsync(request);
+    }
+
+    private Task ResendLocalAsync() => SendLocalAsync(PendingLocalRequest!);
+
+    private Task SendLocalAsync(LocalNotificationRequest request) => RunAsync(
+        async () =>
+        {
+            PendingLocalRequest = request;
+            var result = await Api.SendAsync<MockNotificationResult>(
+                "api/v1/local-notifications",
+                request
+            );
+            PendingLocalRequest = null;
+
+            // 만든 알림만 보이도록 필터를 맞추고 다시 읽는다. 전달기가 처리하면 새로고침으로 확인한다.
+            NotificationFilter = result.NotificationId;
+            StatusFilter = "";
+            ChannelFilter = "";
+            await LoadDeliveriesAsync();
+        },
+        done: "로컬 시연 알림을 만들었습니다. 전달기가 처리하면 '목록 새로고침'으로 결과를 확인해 주세요.",
+        keepPendingOnConflict: false
+    );
+
+    // ---- 재시도 ----
+    private void OpenRetry(DeliveryView delivery)
+    {
+        RetryTarget = delivery;
+        RetryReason = "";
+    }
+
+    private void CloseRetry()
+    {
+        RetryTarget = null;
+        RetryReason = "";
+    }
+
+    private Task RetryAsync()
+    {
+        var target = RetryTarget!;
+        var reason = RetryReason.Trim();
+
+        return RunAsync(
+            async () =>
+            {
+                if (ListFailed)
+                {
+                    throw new InvalidOperationException("최신 발송 이력을 먼저 다시 조회해 주세요.");
+                }
+
+                if (reason.Length is < 1 or > 1000)
+                {
+                    throw new InvalidOperationException("재시도 사유: 1~1000자로 입력해 주세요.");
+                }
+
+                await Api.SendAsync<DeliveryView>(
+                    $"api/v1/deliveries/{Uri.EscapeDataString(target.DeliveryId)}/retry",
+                    new ReasonCommand(target.Version, reason)
+                );
+                CloseRetry();
+                await LoadDeliveriesAsync();
+            },
+            done: "재시도를 접수했습니다. 전달기가 처리하면 '목록 새로고침'으로 결과를 확인해 주세요.",
+            reloadOnConflict: () => ReloadRetryTargetAsync(target.DeliveryId)
+        );
+    }
+
+    // 409 뒤: 목록을 다시 읽고, 팝업이 같은 발송의 최신 버전을 보게 한다(사유 입력은 유지).
+    private async Task ReloadRetryTargetAsync(string deliveryId)
+    {
+        await LoadDeliveriesAsync();
+        var latest = Rows.FirstOrDefault(x => x.DeliveryId == deliveryId);
+        if (latest is null || latest.Status != "FAILED")
+        {
+            RetryTarget = null;
+            return;
+        }
+
+        RetryTarget = latest;
+    }
+
+    // ---- Mock 수신 내용 ----
+    private Task OpenReceiptAsync(string deliveryId) => RunAsync(
+        async () =>
+        {
+            try
+            {
+                var mock = await Api.GetAsync<MockReceiptView>(
+                    $"api/v1/deliveries/{Uri.EscapeDataString(deliveryId)}/mock-receipt"
+                );
+                Receipt = new ShownReceipt(
+                    false,
+                    mock.DeliveryId,
+                    mock.ReceiptId,
+                    mock.Provider,
+                    mock.Channel,
+                    mock.DestinationKey,
+                    mock.Subject,
+                    mock.Body,
+                    mock.MessageHash,
+                    mock.AcceptedAt
+                );
+            }
+            catch (ApiFault error) when (error.Status == 404)
+            {
+                Receipt = null;
+                throw new InvalidOperationException("아직 Mock 수신 기록이 없습니다.");
+            }
+        }
+    );
+
+    // 로컬 통신 수신 내용(Mailpit·채팅 수신기가 받은 제목·본문·해시).
+    private Task OpenLocalReceiptAsync(string deliveryId) => RunAsync(
+        async () =>
+        {
+            try
+            {
+                var local = await Api.GetAsync<LocalReceiptView>(
+                    $"api/v1/deliveries/{Uri.EscapeDataString(deliveryId)}/local-receipt"
+                );
+                Receipt = new ShownReceipt(
+                    true,
+                    local.DeliveryId,
+                    local.ReceiptId,
+                    local.Provider,
+                    local.Channel,
+                    local.DestinationKey,
+                    local.Subject,
+                    local.Body,
+                    local.MessageHash,
+                    local.AcceptedAt
+                );
+            }
+            catch (ApiFault error) when (error.Status == 404)
+            {
+                Receipt = null;
+                throw new InvalidOperationException("아직 로컬 수신 기록이 없습니다.");
+            }
+        }
+    );
+
+    private void CloseReceipt()
+    {
+        Receipt = null;
+    }
+
+    private void CloseOnEscape(KeyboardEventArgs args)
+    {
+        if (args.Key != "Escape")
+        {
+            return;
+        }
+
+        CloseRetry();
+        CloseReceipt();
+        CloseOutboxRetry();
+    }
+
+    // ---- Outbox 재처리 ----
+    private OutboxView? OutboxTarget;
+    private OutboxRetryState? OutboxState;
+    private bool OutboxStateFailed;
+    private string OutboxReason = "";
+    private string OutboxNote = "";
+
+    // 결과를 확인하지 못한 재처리 요청. 같은 요청 ID·상태 해시·사유로만 다시 보낸다.
+    private OutboxRetryRequest? PendingOutboxRetry;
+
+    private bool CanSendOutboxRetry =>
+        PendingOutboxRetry is not null
+        || (OutboxState is { CanRetry: true } && !OutboxStateFailed);
+
+    private static string BlockText(string? reason) => reason switch
+    {
+        "ALREADY_HANDED_OFF" => "이미 로컬 전달기로 인계된 이벤트입니다.",
+        "UNSUPPORTED_CONSUMER" => "운영 재처리 대상이 아닌 이벤트 종류입니다(설정 전달 등).",
+        "NOT_FAILED" => "최종 실패 상태가 아닙니다.",
+        "AUTOMATIC_RETRY_PENDING" => "자동 재시도가 아직 남아 있습니다. 끝난 뒤 다시 확인해 주세요.",
+        null => "",
+        _ => reason
+    };
+
+    private Task OpenOutboxRetryAsync(OutboxView item)
+    {
+        // 다른 이벤트를 열면 이전 이벤트의 입력·대기 요청은 버린다.
+        if (OutboxTarget?.OutboxId != item.OutboxId)
+        {
+            OutboxReason = "";
+            PendingOutboxRetry = null;
+        }
+
+        OutboxTarget = item;
+        OutboxNote = "";
+        return ReloadOutboxStateAsync();
+    }
+
+    private void CloseOutboxRetry()
+    {
+        OutboxTarget = null;
+        OutboxState = null;
+        OutboxStateFailed = false;
+        OutboxNote = "";
+    }
+
+    private Task ReloadOutboxStateAsync() => RunAsync(LoadOutboxStateAsync, done: "재처리 상태를 읽었습니다.");
+
+    // 최신 상태와 상태 해시를 읽는다. 실패하면 재처리 전송을 막는다.
+    private async Task LoadOutboxStateAsync()
+    {
+        var id = OutboxTarget!.OutboxId;
+        try
+        {
+            var state = await Api.GetAsync<OutboxRetryState>(
+                $"api/v1/outbox-events/{Uri.EscapeDataString(id)}/retry-state"
+            );
+            if (OutboxTarget?.OutboxId != id)
+            {
+                return;
+            }
+
+            OutboxState = state;
+            OutboxStateFailed = false;
+        }
+        catch (Exception)
+        {
+            OutboxStateFailed = true;
+            throw;
+        }
+    }
+
+    private async Task SendOutboxRetryAsync()
+    {
+        var outcome = "";
+        await RunAsync(
+            async () =>
+            {
+                var id = OutboxTarget!.OutboxId;
+                var request = PendingOutboxRetry;
+                if (request is null)
+                {
+                    if (OutboxStateFailed || OutboxState is not { CanRetry: true } state)
+                    {
+                        throw new InvalidOperationException("재처리 가능한 최신 상태를 먼저 확인해 주세요.");
+                    }
+
+                    var reason = OutboxReason.Trim();
+                    if (reason.Length is < 1 or > 1000)
+                    {
+                        throw new InvalidOperationException("재처리 사유: 1~1000자로 입력해 주세요.");
+                    }
+
+                    request = new OutboxRetryRequest(
+                        Guid.NewGuid().ToString(),
+                        state.StateHash,
+                        reason
+                    );
+                }
+
+                PendingOutboxRetry = request;
+                try
+                {
+                    await Api.SendAsync<OutboxRetryState>(
+                        $"api/v1/outbox-events/{Uri.EscapeDataString(id)}/retry",
+                        request
+                    );
+                    PendingOutboxRetry = null;
+                    OutboxReason = "";
+                    outcome = "accepted";
+                    CloseOutboxRetry();
+                    await LoadOutboxAsync();
+                }
+                catch (ApiFault error) when (error.Status == 409)
+                {
+                    // 다른 처리로 상태가 바뀌었다. 사유는 지키고 최신 상태를 다시 보여 준다(새 요청 ID로 재검토).
+                    PendingOutboxRetry = null;
+                    outcome = "conflict";
+                    OutboxNote = "다른 변경으로 상태가 바뀌었습니다(" + error.Message + "). "
+                        + "최신 상태를 확인한 뒤 다시 요청해 주세요.";
+                    try
+                    {
+                        await LoadOutboxStateAsync();
+                    }
+                    catch (Exception)
+                    {
+                        OutboxNote += " 최신 상태도 읽지 못했습니다. '재처리 상태 다시 조회'를 눌러 주세요.";
+                    }
+                }
+                catch (ApiFault error) when (error.Status == 422)
+                {
+                    // 원본 내용·수신자 정합성 검사 실패. 원문은 화면에서 고칠 수 없다.
+                    PendingOutboxRetry = null;
+                    outcome = "invalid";
+                    OutboxNote = "이벤트 원본 정합성 검사에서 거절됐습니다(" + error.Message + "). "
+                        + "원문은 고칠 수 없으므로 재처리할 수 없습니다.";
+                }
+            },
+            done: "재처리를 접수했습니다. 이벤트가 다시 인계 대기로 돌아갔습니다(발송 성공 보장 아님)."
+        );
+
+        if (outcome == "conflict")
+        {
+            Message = "충돌로 재처리하지 않았습니다. 최신 상태를 확인해 주세요.";
+        }
+        else if (outcome == "invalid")
+        {
+            Message = "정합성 검사에서 거절돼 재처리하지 않았습니다.";
+        }
+    }
+
+    // ---- Outbox ----
+    private Task ReloadOutboxAsync() => RunAsync(LoadOutboxAsync, done: "Outbox 기록을 다시 읽었습니다.");
+
+    private string OutboxPath() =>
+        "api/v1/outbox-events?limit=50" + (OutboxFilter == "" ? "" : "&status=" + OutboxFilter);
+
+    private async Task LoadOutboxAsync()
+    {
+        var page = await Api.GetAsync<PageResult<OutboxView>>(OutboxPath());
+        Outbox = page.Items.ToList();
+        OutboxCursor = page.NextCursor;
+    }
+
+    private Task FilterOutboxAsync(ChangeEventArgs args) => RunAsync(
+        async () =>
+        {
+            OutboxFilter = args.Value?.ToString() ?? "";
+            await LoadOutboxAsync();
+        }
+    );
+
+    private Task MoreOutboxAsync() => RunAsync(
+        async () =>
+        {
+            var page = await Api.GetAsync<PageResult<OutboxView>>(
+                OutboxPath() + "&cursor=" + Uri.EscapeDataString(OutboxCursor!)
+            );
+            Outbox.AddRange(page.Items);
+            OutboxCursor = page.NextCursor;
+        }
+    );
+
+    // 버튼 하나의 처리. 409는 입력을 지키고 최신 값을 다시 읽는다(실패해도 화면 예외로 번지지 않음).
+    // 통신 오류·5xx는 자동으로 다시 보내지 않는다(서버에서 이미 처리됐을 수 있음).
+    private async Task RunAsync(
+        Func<Task> action,
+        string done = "완료했습니다.",
+        Func<Task>? reloadOnConflict = null,
+        bool keepPendingOnConflict = true
+    )
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        Message = "처리 중입니다.";
+        try
+        {
+            await action();
+            Message = done;
+        }
+        catch (ApiFault error) when (error.Status == 409)
+        {
+            Message = "다른 변경과 충돌했습니다(" + error.Message + "). 입력은 그대로 두었습니다. "
+                + "최신 값을 확인한 뒤 다시 시도해 주세요.";
+            if (!keepPendingOnConflict)
+            {
+                // 같은 요청 ID가 다른 본문으로 쓰였다는 뜻이라 같은 요청 재전송을 그만둔다.
+                PendingRequest = null;
+                PendingLocalRequest = null;
+            }
+
+            if (reloadOnConflict is not null)
+            {
+                try
+                {
+                    await reloadOnConflict();
+                }
+                catch (Exception)
+                {
+                    Message += " 최신 값도 읽지 못했습니다. '최신 발송 이력 다시 조회'를 눌러 주세요.";
+                }
+            }
+        }
+        catch (ApiFault error) when (error.Status >= 500)
+        {
+            Message = "서버 응답을 확인하지 못했습니다. 다시 보내기 전에 새로고침해 결과를 확인해 주세요.";
+        }
+        catch (HttpRequestException)
+        {
+            Message = "네트워크 오류로 결과를 확인하지 못했습니다. 새로고침해 결과를 확인해 주세요.";
+        }
+        catch (ApiFault error)
+        {
+            Message = error.Message + $" ({error.Status})";
+            if (error.Status is >= 400 and < 500 and not 408 and not 429)
+            {
+                // 서버가 요청 자체를 거절했으므로 같은 요청을 다시 보낼 이유가 없다.
+                PendingRequest = null;
+                PendingLocalRequest = null;
+            }
+        }
+        catch (Exception error)
+        {
+            Message = error.Message;
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    private static string Kst(DateTime utc) => utc.AddHours(9).ToString("yyyy-MM-dd HH:mm:ss");
+}
+
+

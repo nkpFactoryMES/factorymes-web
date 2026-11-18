@@ -1,0 +1,922 @@
+@page "/equipment-connections"
+@using FactoryMES.Web.Client.Components
+@using FactoryMES.Web.Client
+@inject MesApi Api
+@implements IAsyncDisposable
+
+<PageTitle>설비 연결 · FactoryMES</PageTitle>
+<main>
+  <header>
+    <div>
+      <p>FACTORY MES / LOCAL MOCK COLLECTION</p>
+      <h1>설비 연결·수집</h1>
+      <p>Oracle 설정 → Redis 캐시 → 게이트웨이 → 설비 커넥터 → HTTP Mock·Modbus TCP 시뮬레이터</p>
+    </div>
+  </header>
+  <p role="status">@Message</p>
+  @if (Admin)
+  {
+    <fieldset disabled="@Busy">
+      @* 상단 도구. 조회·수정 팝업이 열려 있으면 갱신 도구는 팝업 위쪽 줄로 옮긴다(같은 버튼이 두 개 생기지 않게). *@
+      @if (EditingId is null)
+      {
+        <div class="toolbar">
+          <button @onclick="RefreshAsync">수집 현황 새로고침</button>
+          <label>
+            <input
+              type="checkbox"
+              @bind="AutoRefresh"
+            />
+            3초마다 수집 현황 갱신
+          </label>
+          <button
+            type="button"
+            @onclick="OpenCreateConnection"
+          >새 연결</button>
+        </div>
+      }
+      <table>
+        <thead>
+          <tr>
+            <th>연결</th>
+            <th>수집 설정</th>
+            <th>설정/적용 버전</th>
+            <th>연결 상태</th>
+            <th>작업</th>
+          </tr>
+        </thead>
+        <tbody>
+          @foreach (var target in Targets)
+          {
+            <tr>
+              <td>@target.DisplayName · @target.TargetId</td>
+              <td>@(target.Enabled ? "활성" : "중지")</td>
+              <td>@target.ConfigVersion / @target.AppliedConfigVersion</td>
+              <td>@(target.ConnectionState ?? "설정 전달 대기")</td>
+              <td>
+                <button @onclick="() => SelectAsync(target.TargetId)">조회·수정</button>
+              </td>
+            </tr>
+          }
+        </tbody>
+      </table>
+      @if (TargetCursor is not null)
+      {
+        <button @onclick="MoreTargetsAsync">연결 더 보기</button>
+      }
+      @* 새 연결 등록과 연결 조회·수정(설정·수집 결과)은 모두 팝업이다. 목록 아래에 상시 폼을 두지 않는다. *@
+      @if (EditingId is not null || CreatingConnection)
+      {
+        <div
+          class="modal-backdrop"
+          @onclick="NewConnection"
+        ></div>
+        <div
+          class="modal modal-wide"
+          role="dialog"
+          aria-modal="true"
+          aria-label="@(EditingId is null ? "새 연결 등록" : "연결 조회·수정 · " + EditingId)"
+          @onkeydown="CloseOnEscape"
+        >
+          <div class="modal-bar">
+            @if (EditingId is not null)
+            {
+              <button @onclick="RefreshAsync">수집 현황 새로고침</button>
+              <label>
+                <input
+                  type="checkbox"
+                  @bind="AutoRefresh"
+                />
+                3초마다 수집 현황 갱신
+              </label>
+            }
+            <button
+              type="button"
+              class="modal-close"
+              @onclick="NewConnection"
+            >닫기</button>
+          </div>
+          <p
+            class="modal-status"
+            role="status"
+          >@Message</p>
+          <section class="configuration">
+            <h2>@(EditingId is null ? "설비 연결 등록" : "연결 설정 수정 · " + EditingId)</h2>
+            <p>
+              로컬 시뮬레이터(HTTP Mock, Modbus TCP)만 지원합니다. 등록 후 자동 수집하며,
+              설정 적용과 연결 성공은 별도 상태입니다.
+            </p>
+            <form
+              @onsubmit="SaveAsync"
+              @onsubmit:preventDefault="true"
+            >
+              <label>
+                연결 ID
+                <input
+                  @bind="TargetId"
+                  maxlength="64"
+                  disabled="@(EditingId is not null)"
+                  required
+                />
+              </label>
+              <label>
+                연결 표시명
+                <input
+                  @bind="DisplayName"
+                  maxlength="100"
+                  required
+                />
+              </label>
+              <label>
+                연결 설비
+                <select
+                  @bind="EquipmentId"
+                  @bind:after="EquipmentChanged"
+                  disabled="@(EditingId is not null)"
+                  required
+                >
+                  <option value="">선택</option>
+                  @foreach (var equipment in Equipment)
+                  {
+                    <option value="@equipment.EquipmentId">
+                      @equipment.Name (@equipment.Code)
+                    </option>
+                  }
+                </select>
+              </label>
+              <label>
+                프로토콜
+                <select
+                  @bind="Protocol"
+                  @bind:after="ProtocolChanged"
+                >
+                  <option value="HTTP">HTTP Mock</option>
+                  <option value="@ModbusFormat.Protocol">Modbus TCP</option>
+                </select>
+              </label>
+              <label>
+                @(IsModbus ? "승인된 Modbus 주소" : "승인된 Mock URL")
+                <input
+                  @bind="Endpoint"
+                  maxlength="500"
+                  required
+                />
+              </label>
+              @if (IsModbus)
+              {
+                <p class="endpoint-hint">
+                  예: modbus.tcp://modbus-simulator:1502/unit/1 · unit은 1~247이며,
+                  같은 unit을 다른 설비에 연결할 수 없습니다. 읽기(FC03)만 합니다.
+                </p>
+              }
+              else
+              {
+                <p class="endpoint-hint">
+                  예: http://equipment-simulator:8080/equipment/{설비 코드} · 설비를 고르면 채워집니다.
+                </p>
+              }
+              <label>
+                수집 주기 (ms)
+                <input
+                  type="number"
+                  @bind="PollMs"
+                  min="1000"
+                  max="60000"
+                  required
+                />
+              </label>
+              <label>
+                응답 제한시간 (ms)
+                <input
+                  type="number"
+                  @bind="TimeoutMs"
+                  min="100"
+                  max="10000"
+                  required
+                />
+              </label>
+              <label>
+                신선도 기준 (초)
+                <input
+                  type="number"
+                  @bind="StaleSec"
+                  min="1"
+                  max="3600"
+                  required
+                />
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  @bind="Enabled"
+                />
+                수집 활성
+              </label>
+              <h3>태그 매핑</h3>
+              <p>수치 변환: 원본 × 배율 + 오프셋. 상태는 문자열입니다. 기존 지표 코드는 이력 보존을 위해 고정됩니다.</p>
+              @if (IsModbus)
+              {
+                @* Modbus는 소스 주소·자료형을 직접 고른다. 규칙은 Backend 검증(ModbusFormat)과 같다. *@
+                <ul class="modbus-rules">
+                  <li>소스 주소: holding:주소:자료형:순서 (예: holding:0:UINT32:ABCD)</li>
+                  <li>주소는 FC03 wire 주소(0부터)입니다. 40001 표기를 자동 변환하지 않습니다.</li>
+                  <li>UINT16·INT16은 AB/BA, UINT32·INT32·FLOAT32는 ABCD/CDAB/BADC/DCBA 순서입니다.</li>
+                  <li>FLOAT32는 DECIMAL, 그 밖의 자료형은 INTEGER입니다. COUNTER는 UINT16·UINT32만 됩니다.</li>
+                  <li>상태 문자열은 지원하지 않습니다. 활성 태그 전체는 125 레지스터 안에서 한 번에 읽습니다.</li>
+                </ul>
+                for (var index = 0; index < Mappings.Length; index++)
+                {
+                  var map = Mappings[index];
+                  var tag = "태그 " + (index + 1);
+                  <fieldset class="modbus-tag">
+                    <legend>@tag · @(map.Code == "" ? "새 지표" : map.Code)</legend>
+                    <label>
+                      지표 코드 (@tag)
+                      <input
+                        @bind="map.Code"
+                        maxlength="40"
+                        disabled="@(map.Id is not null)"
+                        required
+                      />
+                    </label>
+                    <label>
+                      소스 주소 (@tag)
+                      <input
+                        @bind="map.Source"
+                        maxlength="40"
+                        required
+                      />
+                    </label>
+                    <label>
+                      데이터 타입 (@tag)
+                      <select @bind="map.Type">
+                        <option value="INTEGER">INTEGER</option>
+                        <option value="DECIMAL">DECIMAL</option>
+                      </select>
+                    </label>
+                    <label>
+                      지표 종류 (@tag)
+                      <select @bind="map.Kind">
+                        <option value="NUMBER">NUMBER</option>
+                        <option value="COUNTER">COUNTER</option>
+                      </select>
+                    </label>
+                    <label>
+                      단위 (@tag)
+                      <input
+                        @bind="map.Unit"
+                        maxlength="20"
+                      />
+                    </label>
+                    <label>
+                      배율 (@tag)
+                      <input
+                        @bind="map.Scale"
+                        inputmode="decimal"
+                        required
+                      />
+                    </label>
+                    <label>
+                      오프셋 (@tag)
+                      <input
+                        @bind="map.Offset"
+                        inputmode="decimal"
+                        required
+                      />
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        @bind="map.Enabled"
+                      />
+                      매핑 사용 (@tag)
+                    </label>
+                    @if (map.Id is null)
+                    {
+                      <button
+                        type="button"
+                        @onclick="() => RemoveTag(map)"
+                      >태그 빼기 (@tag)</button>
+                    }
+                  </fieldset>
+                }
+                <button
+                  type="button"
+                  @onclick="AddTag"
+                >태그 추가</button>
+              }
+              else
+              {
+                foreach (var map in Mappings)
+                {
+                  <fieldset>
+                    <legend>@map.Source · @map.Kind</legend>
+                    <label>
+                      지표 코드 (@map.Source)
+                      <input
+                        @bind="map.Code"
+                        maxlength="40"
+                        disabled="@(map.Id is not null)"
+                        required
+                      />
+                    </label>
+                    <label>
+                      배율 (@map.Source)
+                      <input
+                        @bind="map.Scale"
+                        inputmode="decimal"
+                        required
+                      />
+                    </label>
+                    <label>
+                      오프셋 (@map.Source)
+                      <input
+                        @bind="map.Offset"
+                        inputmode="decimal"
+                        required
+                      />
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        @bind="map.Enabled"
+                      />
+                      매핑 사용 (@map.Source)
+                    </label>
+                  </fieldset>
+                }
+              }
+              @if (EditingId is not null)
+              {
+                <label>
+                  설정 변경 사유
+                  <input
+                    @bind="ChangeReason"
+                    maxlength="1000"
+                    required
+                  />
+                </label>
+              }
+              <button type="submit">@(EditingId is null ? "연결 등록" : "연결 설정 저장")</button>
+            </form>
+          </section>
+          @if (Selected is not null)
+          {
+            <section class="samples">
+              <h2>수집 결과 · @Selected.TargetId</h2>
+              <p>
+                설정 @Selected.ConfigVersion / 적용 @Selected.AppliedConfigVersion
+                · @Selected.ConnectionState
+              </p>
+              <p>최근 상태 보고: @Kst(Selected.LastHeartbeatAt) · 수집 @(Selected.Enabled ? "활성" : "중지")</p>
+              <p>설정 해시: @Selected.Config.ConfigHash</p>
+              <label>
+                활성·중지 사유
+                <input
+                  @bind="StateReason"
+                  maxlength="1000"
+                />
+              </label>
+              <button @onclick="ToggleAsync">@(Selected.Enabled ? "수집 중지" : "수집 재개")</button>
+              @if (Samples.Count == 0)
+              {
+                <p>아직 저장된 수집 데이터가 없습니다.</p>
+              }
+              <table>
+                <thead>
+                  <tr>
+                    <th>측정/수신 시각(KST)</th>
+                    <th>스트림/순번/설정</th>
+                    <th>지표·값·품질</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @foreach (var sample in Samples)
+                  {
+                    <tr>
+                      <td>@Kst(sample.OccurredAt) / @Kst(sample.ReceivedAt)</td>
+                      <td>@sample.StreamId · @sample.SequenceNo · v@(sample.ConfigVersion)</td>
+                      <td>
+                        @foreach (var metric in sample.Metrics)
+                        {
+                          <p>
+                            @metric.MetricCode: @(metric.NumericValue ?? metric.TextValue)
+                            @metric.Unit · @metric.Quality
+                          </p>
+                        }
+                      </td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+              @if (SampleCursor is not null)
+              {
+                <button @onclick="MoreSamplesAsync">이전 수집 데이터</button>
+              }
+            </section>
+          }
+        </div>
+      }
+    </fieldset>
+  }
+  else if (User is not null)
+  {
+    <p>설비 연결 관리는 관리자만 사용할 수 있습니다.</p>
+  }
+</main>
+
+@code {
+    private SessionUser? User;
+    private bool Admin => User?.Roles.Contains("ADMIN") == true;
+    private bool Busy;
+    private bool AutoRefresh = true;
+    private string Message = "로그인 확인 중";
+    private EquipmentChoice[] Equipment = [];
+    private List<TargetView> Targets = [];
+    private string? TargetCursor;
+    private TargetView? Selected;
+    private List<SampleView> Samples = [];
+    private string? SampleCursor;
+    private string? EditingId;
+    private bool CreatingConnection;
+    private long EditVersion;
+    private long EditConfigVersion;
+    private string TargetId = "";
+    private string DisplayName = "";
+    private string EquipmentId = "";
+    private string Endpoint = "";
+    private long PollMs = 2000;
+    private long TimeoutMs = 1000;
+    private long StaleSec = 20;
+    private bool Enabled = true;
+    private string ChangeReason = "";
+    private string StateReason = "";
+    private MappingForm[] Mappings = Defaults();
+
+    // 프로토콜(HTTP 또는 MODBUS_TCP). 바꾸면 이전 프로토콜의 주소·매핑 입력을 Drafts에 보관해
+    // 다시 돌아왔을 때 그대로 되살린다(사용자 입력 보호). 저장은 지금 보이는 프로토콜 값만 보낸다.
+    private string Protocol = "HTTP";
+    private string ShownProtocol = "HTTP";
+    private readonly Dictionary<string, (string Endpoint, MappingForm[] Mappings)> Drafts = [];
+    private bool IsModbus => Protocol == ModbusFormat.Protocol;
+    private const string ModbusExampleEndpoint = "modbus.tcp://modbus-simulator:1502/unit/1";
+
+    private readonly CancellationTokenSource Stop = new();
+    private Task? RefreshLoop;
+
+    private sealed class MappingForm
+    {
+        public string? Id;
+        public string Code = "";
+        public string Source = "";
+        public string Type = "";
+        public string Kind = "";
+        public string? Unit;
+        public string Scale = "1";
+        public string Offset = "0";
+        public bool Enabled = true;
+    }
+
+    private static MappingForm[] Defaults() =>
+    [
+        new() {
+            Code = "TOTAL_COUNT",
+            Source = "totalCount",
+            Type = "INTEGER",
+            Kind = "COUNTER",
+            Unit = "EA"
+        },
+        new() {
+            Code = "TEMPERATURE",
+            Source = "temperature",
+            Type = "DECIMAL",
+            Kind = "NUMBER",
+            Unit = "C"
+        },
+        new() {
+            Code = "OPERATING_STATE",
+            Source = "operatingState",
+            Type = "STRING",
+            Kind = "STATE"
+        }
+    ];
+
+    // Modbus 예시 매핑(시뮬레이터 레지스터 배치 기준).
+    // counter: holding 0 UINT32 ABCD, 온도: holding 2 INT16 AB × 0.1.
+    private static MappingForm[] ModbusDefaults() =>
+    [
+        new() {
+            Code = "TOTAL_COUNT",
+            Source = "holding:0:UINT32:ABCD",
+            Type = "INTEGER",
+            Kind = "COUNTER",
+            Unit = "EA"
+        },
+        new() {
+            Code = "TEMPERATURE",
+            Source = "holding:2:INT16:AB",
+            Type = "INTEGER",
+            Kind = "NUMBER",
+            Unit = "℃",
+            Scale = "0.1"
+        }
+    ];
+
+    // 프로토콜을 바꿀 때 새 입력의 시작값을 만든다.
+    // 수정 중이면 같은 지표 코드의 기존 매핑 ID를 이어 받아 이력을 같은 지표로 잇는다.
+    // 저장 연결이 이미 그 프로토콜이면 저장된 매핑을 그대로 쓴다.
+    // 새 프로토콜에 없는 기존 매핑은 보내지 않으며, Backend가 삭제 대신 비활성화한다.
+    private MappingForm[] StartMappings(string protocol)
+    {
+        var saved = Selected?.Config.Content.Settings;
+        if (saved is not null && saved.Protocol == protocol)
+        {
+            return ToForms(saved.Mappings);
+        }
+
+        var forms = protocol == ModbusFormat.Protocol ? ModbusDefaults() : Defaults();
+        foreach (var form in forms)
+        {
+            form.Id = saved?.Mappings.FirstOrDefault(x => x.MetricCode == form.Code)?.MappingId;
+        }
+
+        return forms;
+    }
+
+    private static MappingForm[] ToForms(MappingInput[] mappings) =>
+        mappings.Select(x => new MappingForm
+        {
+            Id = x.MappingId,
+            Code = x.MetricCode,
+            Source = x.SourcePath,
+            Type = x.DataType,
+            Kind = x.ValueKind,
+            Unit = x.Unit,
+            Scale = x.Scale,
+            Offset = x.Offset,
+            Enabled = x.Enabled
+        }).ToArray();
+
+    // 프로토콜 선택이 바뀌면: 보이던 입력을 보관하고, 보관본이 있으면 되살리고, 없으면 시작값을 채운다.
+    private void ProtocolChanged()
+    {
+        Drafts[ShownProtocol] = (Endpoint, Mappings);
+        if (Drafts.Remove(Protocol, out var draft))
+        {
+            Endpoint = draft.Endpoint;
+            Mappings = draft.Mappings;
+        }
+        else
+        {
+            var saved = Selected?.Config.Content.Settings;
+            Endpoint = saved is not null && saved.Protocol == Protocol
+                ? saved.ApprovedEndpoint
+                : IsModbus ? ModbusExampleEndpoint : HttpEndpoint();
+            Mappings = StartMappings(Protocol);
+        }
+
+        ShownProtocol = Protocol;
+        Message = "프로토콜을 바꿨습니다. 이전 입력은 보관되어 다시 고르면 복원됩니다."
+            + " 새 프로토콜에 없는 기존 매핑은 저장할 때 비활성화됩니다(이력 보존).";
+    }
+
+    // Modbus 태그 추가·빼기. 저장된 매핑(ID 있음)은 빼지 않고 "매핑 사용"을 꺼서 비활성화한다.
+    private void AddTag()
+    {
+        Mappings =
+        [
+            .. Mappings,
+            new MappingForm
+            {
+                Source = "holding:4:FLOAT32:ABCD",
+                Type = "DECIMAL",
+                Kind = "NUMBER"
+            }
+        ];
+    }
+
+    private void RemoveTag(MappingForm map)
+    {
+        Mappings = Mappings.Where(x => x != map).ToArray();
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RunAsync(async () =>
+        {
+            User = await Api.GetAsync<SessionUser>("api/v1/auth/me");
+            if (!Admin) return;
+            var equipment = new List<EquipmentChoice>();
+            string? cursor = null;
+            do
+            {
+                var page = await Api.GetAsync<PageResult<EquipmentChoice>>(
+                    "api/v1/equipment?active=true&limit=100" + (cursor is null ? "" : "&cursor=" + cursor));
+                equipment.AddRange(page.Items);
+                cursor = page.NextCursor;
+            }
+            while (cursor is not null);
+            Equipment = equipment.ToArray();
+            await LoadTargetsAsync();
+        });
+        RefreshLoop = RefreshLoopAsync();
+    }
+
+    private async Task RefreshLoopAsync()
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(Stop.Token))
+            {
+                if (Admin && AutoRefresh && !Busy)
+                {
+                    await InvokeAsync(async () =>
+                    {
+                        await RunAsync(RefreshStatusAsync, false);
+                        StateHasChanged();
+                    });
+                }
+            }
+        }
+        catch (OperationCanceledException) when (Stop.IsCancellationRequested) { }
+    }
+
+    private async Task LoadTargetsAsync()
+    {
+        var page = await Api.GetAsync<PageResult<TargetView>>("api/v1/integration-targets?limit=100");
+        Targets = page.Items.ToList();
+        TargetCursor = page.NextCursor;
+    }
+
+    private async Task RefreshStatusAsync()
+    {
+        await LoadTargetsAsync();
+        if (Selected is null) return;
+        Selected = await Api.GetAsync<TargetView>("api/v1/integration-targets/" + Selected.TargetId);
+        var page = await Api.GetAsync<PageResult<SampleView>>(
+            "api/v1/integration-targets/" + Selected.TargetId + "/samples?limit=20");
+        Samples = page.Items.ToList();
+        SampleCursor = page.NextCursor;
+    }
+
+    private Task RefreshAsync() => RunAsync(RefreshStatusAsync);
+
+    private Task MoreTargetsAsync() => RunAsync(async () =>
+    {
+        AutoRefresh = false;
+        var page = await Api.GetAsync<PageResult<TargetView>>(
+            "api/v1/integration-targets?limit=100&cursor=" + TargetCursor);
+        Targets.AddRange(page.Items);
+        TargetCursor = page.NextCursor;
+    });
+
+    private Task MoreSamplesAsync() => RunAsync(async () =>
+    {
+        AutoRefresh = false;
+        var page = await Api.GetAsync<PageResult<SampleView>>(
+            "api/v1/integration-targets/" + Selected!.TargetId + "/samples?limit=20&cursor=" + SampleCursor);
+        Samples.AddRange(page.Items);
+        SampleCursor = page.NextCursor;
+    });
+
+    // 팝업에서 Esc를 누르면 닫는다(신규 등록 입력 중에는 아무 일도 하지 않음).
+    private void CloseOnEscape(KeyboardEventArgs args)
+    {
+        if (args.Key == "Escape" && (EditingId is not null || CreatingConnection))
+        {
+            NewConnection();
+        }
+    }
+
+    // 상단 "새 연결": 입력을 비운 등록 팝업을 연다.
+    private void OpenCreateConnection()
+    {
+        NewConnection();
+        CreatingConnection = true;
+    }
+
+    // 팝업 닫기(등록·조회 공통): 선택과 입력을 비운다.
+    private void NewConnection()
+    {
+        CreatingConnection = false;
+        EditingId = null;
+        Selected = null;
+        Samples = [];
+        SampleCursor = null;
+        TargetId = "";
+        DisplayName = "";
+        EquipmentId = "";
+        Endpoint = "";
+        PollMs = 2000;
+        TimeoutMs = 1000;
+        StaleSec = 20;
+        Enabled = true;
+        Mappings = Defaults();
+        Protocol = "HTTP";
+        ShownProtocol = "HTTP";
+        Drafts.Clear();
+        ChangeReason = "";
+        Message = "신규 연결 입력";
+    }
+
+    // 설비를 고르면 HTTP Mock 주소는 설비 코드로 채운다. Modbus 주소(unit)는 설비 코드와 무관해 두고,
+    // 비어 있을 때만 예시를 넣는다.
+    private void EquipmentChanged()
+    {
+        if (IsModbus)
+        {
+            if (Endpoint == "") Endpoint = ModbusExampleEndpoint;
+            return;
+        }
+
+        Endpoint = HttpEndpoint();
+    }
+
+    private string HttpEndpoint()
+    {
+        var equipment = Equipment.FirstOrDefault(x => x.EquipmentId == EquipmentId);
+        return equipment is null
+            ? ""
+            : "http://equipment-simulator:8080/equipment/" + equipment.Code;
+    }
+
+    private Task SelectAsync(string targetId) => RunAsync(async () =>
+    {
+        Selected = await Api.GetAsync<TargetView>("api/v1/integration-targets/" + targetId);
+        EditingId = Selected.TargetId;
+        EditVersion = Selected.Version;
+        EditConfigVersion = Selected.ConfigVersion;
+        TargetId = Selected.TargetId;
+        DisplayName = Selected.DisplayName;
+        EquipmentId = Selected.EquipmentId!;
+        Enabled = Selected.Enabled;
+        var settings = Selected.Config.Content.Settings;
+        Endpoint = settings.ApprovedEndpoint;
+        PollMs = settings.PollIntervalMs;
+        TimeoutMs = settings.TimeoutMs;
+        StaleSec = settings.StaleSec;
+        Mappings = ToForms(settings.Mappings);
+        Protocol = settings.Protocol;
+        ShownProtocol = settings.Protocol;
+        Drafts.Clear();
+        ChangeReason = "";
+        await RefreshStatusAsync();
+    });
+
+    private Task SaveAsync() => RunAsync(async () =>
+    {
+        var settings = new EquipmentSettings(
+            Protocol,
+            Endpoint.Trim(),
+            PollMs,
+            TimeoutMs,
+            StaleSec,
+            null,
+            Mappings.Select(x => new MappingInput(
+                x.Id,
+                x.Code.Trim(),
+                x.Source.Trim(),
+                x.Type,
+                x.Kind,
+                string.IsNullOrWhiteSpace(x.Unit) ? null : x.Unit.Trim(),
+                x.Scale.Trim(),
+                x.Offset.Trim(),
+                x.Enabled
+            )).ToArray()
+        );
+        if (IsModbus)
+        {
+            CheckModbus(settings);
+        }
+
+        TargetView result;
+        if (EditingId is null)
+        {
+            result = await Api.SendAsync<TargetView>("api/v1/integration-targets",
+                new EquipmentTargetCreate(
+                    TargetId.Trim(),
+                    DisplayName.Trim(),
+                    IsModbus ? ModbusFormat.Connector : "equipment-http",
+                    Enabled,
+                    "EQUIPMENT",
+                    EquipmentId,
+                    settings
+                ));
+        }
+        else
+        {
+            result = await Api.SendAsync<TargetView>(
+                "api/v1/integration-targets/" + EditingId + "/configuration",
+                new TargetConfigUpdate(
+                    EditVersion,
+                    EditConfigVersion,
+                    DisplayName.Trim(),
+                    Enabled,
+                    ChangeReason.Trim(),
+                    settings
+                ),
+                put: true
+            );
+        }
+        await LoadSavedAsync(result);
+    });
+
+    private async Task LoadSavedAsync(TargetView saved)
+    {
+        EditingId = saved.TargetId;
+        EditVersion = saved.Version;
+        EditConfigVersion = saved.ConfigVersion;
+        Selected = saved;
+        Mappings = ToForms(saved.Config.Content.Settings.Mappings);
+        Protocol = saved.Config.Content.Settings.Protocol;
+        ShownProtocol = Protocol;
+        Drafts.Clear();
+        await RefreshStatusAsync();
+    }
+
+    // 보내기 전에 Backend와 같은 Modbus 규칙(ModbusFormat)으로 먼저 알려 준다. 최종 판단은 서버다.
+    private static void CheckModbus(EquipmentSettings settings)
+    {
+        if (!ModbusFormat.TryEndpoint(settings.ApprovedEndpoint, out _, out _))
+        {
+            throw new InvalidOperationException(
+                "Modbus 주소는 " + ModbusExampleEndpoint + " 형식이며 unit은 1~247입니다."
+            );
+        }
+
+        var wrong = settings.Mappings.FirstOrDefault(x => !ModbusFormat.ValidMapping(x));
+        if (wrong is not null)
+        {
+            throw new InvalidOperationException(
+                $"{wrong.MetricCode} 매핑의 소스 주소·데이터 타입·지표 종류를 확인해 주세요."
+            );
+        }
+
+        if (!ModbusFormat.ValidSpan(settings.Mappings))
+        {
+            throw new InvalidOperationException(
+                "사용하는 Modbus 태그가 하나 이상이고 전체 범위가 125 레지스터 이내여야 합니다."
+            );
+        }
+    }
+
+    private Task ToggleAsync() => RunAsync(async () =>
+    {
+        if (string.IsNullOrWhiteSpace(StateReason))
+            throw new InvalidOperationException("활성·중지 사유를 입력해 주세요.");
+        var current = Selected!;
+        var saved = await Api.SendAsync<TargetView>(
+            "api/v1/integration-targets/" + current.TargetId + "/state",
+            new TargetStateUpdate(
+                current.Version,
+                current.ConfigVersion,
+                !current.Enabled,
+                StateReason.Trim()
+            ),
+            put: true
+        );
+        StateReason = "";
+        Enabled = saved.Enabled;
+        await LoadSavedAsync(saved);
+    });
+
+    private async Task RunAsync(Func<Task> action, bool report = true)
+    {
+        if (Busy) return;
+        Busy = true;
+        if (report) Message = "처리 중입니다.";
+        try
+        {
+            await action();
+            if (report) Message = "완료했습니다. 설정 적용과 실제 수집 상태를 확인해 주세요.";
+        }
+        catch (ApiFault error) when (error.Status == 409)
+        {
+            // 409는 버전 충돌 말고도 unit 중복·HIGH 보호 매핑 같은 업무 거절이 있다.
+            // 서버가 알려 준 원인을 함께 보여 준다(입력은 그대로 둔다).
+            Message = "설정 충돌: 입력을 보존했습니다. 조회·수정으로 최신값을 다시 불러와 비교해 주세요."
+                + " (원인: " + error.Message + ")";
+        }
+        catch (HttpRequestException)
+        {
+            Message = "응답을 확인하지 못했습니다. 자동 재전송하지 않습니다. 목록에서 등록 결과를 먼저 확인해 주세요.";
+        }
+        catch (ApiFault error) when (error.Status >= 500)
+        {
+            Message = "서버 응답을 확인하지 못했습니다. 목록에서 저장 결과를 확인한 뒤 다시 시도해 주세요.";
+        }
+        catch (Exception error) { Message = error.Message; }
+        finally { Busy = false; }
+    }
+
+    private static string Kst(DateTime? utc) => utc?.AddHours(9).ToString("MM-dd HH:mm:ss.fff") ?? "-";
+
+    public async ValueTask DisposeAsync()
+    {
+        Stop.Cancel();
+        if (RefreshLoop is not null) await RefreshLoop;
+        Stop.Dispose();
+    }
+}
+
