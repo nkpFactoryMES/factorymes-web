@@ -1,0 +1,29 @@
+/* 공통 모양은 web/wwwroot/factorymes.css에 있다. 여기에는 알림 설정 화면 고유 규칙만 둔다. */
+
+/* 채널 의미 안내: 화면 위에서 항상 보이게 한다. */
+.settings-notice {
+  padding: 10px 14px;
+  border-left: 4px solid var(--teal);
+  background: var(--teal-tint);
+  color: var(--ink);
+}
+
+.settings-notice p,
+.settings-notice ul {
+  margin: 4px 0;
+}
+
+/* 비활성 사용자는 흐리게 */
+tr.inactive td {
+  color: var(--muted);
+}
+
+/* 저장 충돌 행 */
+tr.conflict td {
+  background: var(--amber-tint);
+}
+
+.setting-dialog label {
+  display: block;
+  margin: 8px 0;
+}

@@ -1,0 +1,447 @@
+@page "/notification-settings"
+@using FactoryMES.Web.Client
+@using FactoryMES.Web.Client.Components
+@inject MesApi Api
+
+@* 알림 채널 설정.
+   - 작업자: 본인 설정(경보 4종)을 읽기만 한다. 변경은 관리자에게 요청한다.
+   - 관리자: 사용자 목록에서 한 명을 골라 이벤트별 이메일·채팅 모드를 바꾼다(사유 필수).
+   모드는 OFF(알림함만)·MOCK(로컬 Mock 수신함)·LOCAL(이 PC의 Mailpit·채팅 수신기) 세 가지다.
+   주소·URL·키는 입력받지 않는다. 설정은 누가 받는지(업무 규칙)가 아니라 채널만 고른다.
+   설정은 바뀐 뒤 새로 생기는 알림에만 적용된다(이미 만든 발송·재시도는 그대로). *@
+<PageTitle>알림 설정 · FactoryMES</PageTitle>
+<main>
+  <header>
+    <div>
+      <p>FACTORY MES / NOTIFICATION SETTINGS</p>
+      <h1>알림 설정</h1>
+      <p>@(User is null ? "로그인 확인 중" : $"{User.Name} · {(Admin ? "관리자" : "작업자")}")</p>
+    </div>
+  </header>
+  <p role="status">@Message</p>
+
+  @if (User is not null)
+  {
+    <fieldset disabled="@Busy">
+      <section class="settings-notice">
+        <p>
+          알림함 알림은 설정과 관계없이 항상 만들어집니다. 여기서는 이메일·채팅 채널만 고릅니다.
+        </p>
+        <ul>
+          <li><strong>끔</strong>: 알림함만 받습니다. 설정이 없으면 끔입니다.</li>
+          <li><strong>Mock</strong>: 로컬 Mock 수신함에 기록합니다(통신 없음).</li>
+          <li>
+            <strong>로컬 수신</strong>: 이 PC의 Mailpit(SMTP)·로컬 채팅 수신기(HTTP)로 보냅니다.
+            외부 메일·채팅으로는 나가지 않습니다.
+          </li>
+          <li>바꾼 설정은 이후 새로 생기는 알림에만 적용됩니다. 이미 만든 발송·재시도는 바뀌지 않습니다.</li>
+        </ul>
+      </section>
+
+      @* 1. 내 설정(모두): 읽기 전용 *@
+      <section class="my-settings">
+        <h2>내 알림 설정</h2>
+        @if (Mine is null)
+        {
+          <p>설정을 불러오는 중입니다.</p>
+        }
+        else
+        {
+          <NotificationSettingsTable Settings="Mine.Settings" />
+          @if (!Admin)
+          {
+            <p class="hint">변경이 필요하면 관리자에게 요청해 주세요.</p>
+          }
+        }
+      </section>
+
+      @* 2. 사용자별 설정(관리자) *@
+      @if (Admin)
+      {
+        <section class="setting-users">
+          <h2>사용자별 알림 설정</h2>
+          <button @onclick="ReloadUsersAsync">사용자 목록 새로고침</button>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>사용자</th>
+                  <th>역할</th>
+                  <th>상태</th>
+                  <th>작업</th>
+                </tr>
+              </thead>
+              <tbody>
+                @foreach (var user in Users)
+                {
+                  <tr class="@(user.Active ? null : "inactive")">
+                    <td>@user.Name (@user.Login) · #@user.UserId</td>
+                    <td>@string.Join(", ", user.Roles)</td>
+                    <td>@(user.Active ? "활성" : "비활성")</td>
+                    <td>
+                      <button @onclick="() => OpenAsync(user.UserId)">설정 보기</button>
+                    </td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+          @if (UserCursor is not null)
+          {
+            <button @onclick="MoreUsersAsync">사용자 더 보기</button>
+          }
+        </section>
+      }
+
+      @* 3. 사용자 설정 팝업(관리자): 이벤트마다 이메일·채팅 모드를 고르고 사유와 함께 저장한다. *@
+      @if (Target is not null)
+      {
+        <div
+          class="modal-backdrop"
+          @onclick="Close"
+        ></div>
+        <section
+          class="modal modal-wide setting-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label="@("알림 설정 · " + Target.User.Name)"
+          @onkeydown="CloseOnEscape"
+        >
+          <div class="modal-bar">
+            <button
+              type="button"
+              @onclick="ReloadTargetAsync"
+            >최신 설정 다시 조회</button>
+            <button
+              type="button"
+              class="modal-close"
+              @onclick="Close"
+            >닫기</button>
+          </div>
+          <p
+            class="modal-status"
+            role="status"
+          >@Message</p>
+          <h3>알림 설정 · @Target.User.Name (@Target.User.Login)</h3>
+          <p class="hint">
+            역할 @string.Join(", ", Target.User.Roles) · @(Target.User.Active ? "활성" : "비활성")
+          </p>
+          @if (!Target.User.Active)
+          {
+            <p class="conflict-wait">비활성 사용자는 설정을 바꿀 수 없습니다.</p>
+          }
+          @if (!Target.User.Roles.Contains("ADMIN"))
+          {
+            <p class="hint">작업자는 경보 알림만 받으므로 AI 분석 설정이 없습니다.</p>
+          }
+          <label>
+            변경 사유
+            <input
+              @bind="Reason"
+              maxlength="300"
+              disabled="@(!Target.User.Active)"
+            />
+          </label>
+          <div class="table-scroll">
+            <table class="setting-edit">
+              <thead>
+                <tr>
+                  <th>이벤트</th>
+                  <th>이메일</th>
+                  <th>채팅</th>
+                  <th>현재 저장값</th>
+                  <th>작업</th>
+                </tr>
+              </thead>
+              <tbody>
+                @foreach (var row in Drafts)
+                {
+                  <tr class="@(row.Conflict ? "conflict" : null)">
+                    <td>
+                      @EventLabel(row.EventKind)
+                      <span class="hint">@row.EventKind</span>
+                    </td>
+                    <td>
+                      <select
+                        @bind="row.EmailMode"
+                        aria-label="@("이메일 · " + EventLabel(row.EventKind))"
+                        disabled="@(!Target.User.Active)"
+                      >
+                        @foreach (var mode in Modes)
+                        {
+                          <option value="@mode">@ModeLabel(mode)</option>
+                        }
+                      </select>
+                    </td>
+                    <td>
+                      <select
+                        @bind="row.ChatMode"
+                        aria-label="@("채팅 · " + EventLabel(row.EventKind))"
+                        disabled="@(!Target.User.Active)"
+                      >
+                        @foreach (var mode in Modes)
+                        {
+                          <option value="@mode">@ModeLabel(mode)</option>
+                        }
+                      </select>
+                    </td>
+                    <td>
+                      @ModeLabel(row.Saved.EmailMode) / @ModeLabel(row.Saved.ChatMode)
+                      · @(row.Saved.Version == 0 ? "미등록" : "v" + row.Saved.Version)
+                      @if (row.Conflict)
+                      {
+                        <span class="badge warn">다른 변경 있음</span>
+                      }
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        disabled="@(!Target.User.Active)"
+                        @onclick="() => SaveAsync(row)"
+                      >@("저장 · " + EventLabel(row.EventKind))</button>
+                    </td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        </section>
+      }
+    </fieldset>
+  }
+</main>
+
+@code {
+    private static readonly string[] Modes = ["OFF", "MOCK", "LOCAL"];
+
+    private SessionUser? User;
+    private bool Admin => User?.Roles.Contains("ADMIN") == true;
+    private string Message = "";
+    private bool Busy;
+
+    private NotificationSettingsView? Mine;
+    private List<NotificationSettingUserView> Users = [];
+    private string? UserCursor;
+
+    // 팝업: 대상 사용자 설정과 행별 입력값(저장 전 선택). Saved는 마지막으로 읽은 서버 값이다.
+    private NotificationSettingsView? Target;
+    private List<DraftRow> Drafts = [];
+    private string Reason = "";
+
+    private sealed class DraftRow
+    {
+        public required string EventKind { get; init; }
+        public required NotificationSettingView Saved { get; set; }
+        public required string EmailMode { get; set; }
+        public required string ChatMode { get; set; }
+        public bool Conflict { get; set; }
+    }
+
+    protected override Task OnInitializedAsync() => RunAsync(
+        async () =>
+        {
+            User = await Api.GetAsync<SessionUser>("api/v1/auth/me");
+            Mine = await Api.GetAsync<NotificationSettingsView>("api/v1/notification-settings/me");
+            if (Admin)
+            {
+                await LoadUsersAsync(null);
+            }
+        }
+    );
+
+    // ---- 사용자 목록(관리자) ----
+    private async Task LoadUsersAsync(string? cursor)
+    {
+        var suffix = cursor is null ? "" : "&cursor=" + Uri.EscapeDataString(cursor);
+        var page = await Api.GetAsync<PageResult<NotificationSettingUserView>>(
+            "api/v1/notification-settings/users?limit=100" + suffix
+        );
+        if (cursor is null)
+        {
+            Users = page.Items.ToList();
+        }
+        else
+        {
+            Users.AddRange(page.Items);
+        }
+
+        UserCursor = page.NextCursor;
+    }
+
+    private Task ReloadUsersAsync() => RunAsync(() => LoadUsersAsync(null));
+
+    private Task MoreUsersAsync() => RunAsync(() => LoadUsersAsync(UserCursor));
+
+    // ---- 사용자 설정 팝업 ----
+    private Task OpenAsync(string userId) => RunAsync(
+        async () =>
+        {
+            var detail = await LoadTargetAsync(userId);
+            Target = detail;
+            Reason = "";
+            Drafts = detail.Settings.Select(x => new DraftRow
+            {
+                EventKind = x.EventKind,
+                Saved = x,
+                EmailMode = x.EmailMode,
+                ChatMode = x.ChatMode
+            }).ToList();
+        }
+    );
+
+    private Task<NotificationSettingsView> LoadTargetAsync(string userId) =>
+        Api.GetAsync<NotificationSettingsView>(
+            "api/v1/notification-settings/users/" + Uri.EscapeDataString(userId)
+        );
+
+    // 최신 서버 값을 다시 읽는다. 입력 중인 선택은 그대로 두고 저장값·버전만 바꾼다.
+    private Task ReloadTargetAsync() => RunAsync(
+        async () =>
+        {
+            await RefreshSavedAsync();
+        },
+        done: "최신 설정을 다시 읽었습니다. 입력한 선택은 그대로 두었습니다."
+    );
+
+    private async Task RefreshSavedAsync()
+    {
+        var latest = await LoadTargetAsync(Target!.User.UserId);
+        Target = latest;
+        foreach (var row in Drafts)
+        {
+            var saved = latest.Settings.FirstOrDefault(x => x.EventKind == row.EventKind);
+            if (saved is not null)
+            {
+                row.Saved = saved;
+            }
+        }
+    }
+
+    private void Close()
+    {
+        Target = null;
+        Drafts = [];
+        Reason = "";
+    }
+
+    private void CloseOnEscape(KeyboardEventArgs args)
+    {
+        if (args.Key == "Escape")
+        {
+            Close();
+        }
+    }
+
+    // 한 이벤트를 저장한다. 마지막으로 읽은 버전(ExpectedVersion)으로 보내고, 409면 입력을 지킨 채
+    // 최신 저장값을 다시 읽어 보여 준다(자동 재전송 없음).
+    private async Task SaveAsync(DraftRow row)
+    {
+        var conflict = false;
+        await RunAsync(
+            async () =>
+            {
+                var reason = Reason.Trim();
+                if (reason.Length is < 1 or > 300)
+                {
+                    throw new InvalidOperationException("변경 사유를 1~300자로 입력해 주세요.");
+                }
+
+                try
+                {
+                    var saved = await Api.SendAsync<NotificationSettingView>(
+                        "api/v1/notification-settings/users/"
+                            + Uri.EscapeDataString(Target!.User.UserId) + "/" + row.EventKind,
+                        new NotificationSettingUpdate(
+                            row.Saved.Version,
+                            row.EmailMode,
+                            row.ChatMode,
+                            reason
+                        ),
+                        put: true
+                    );
+                    row.Saved = saved;
+                    row.Conflict = false;
+                    if (Target.User.UserId == User!.UserId)
+                    {
+                        Mine = await Api.GetAsync<NotificationSettingsView>(
+                            "api/v1/notification-settings/me"
+                        );
+                    }
+                }
+                catch (ApiFault error) when (error.Status == 409)
+                {
+                    conflict = true;
+                    row.Conflict = true;
+                    Message = "다른 변경과 충돌했습니다(" + error.Message + "). 입력은 그대로 두었습니다.";
+                    await RefreshSavedAsync();
+                }
+            },
+            done: "설정을 저장했습니다. 이후 새로 생기는 알림부터 적용됩니다."
+        );
+
+        if (conflict)
+        {
+            Message = "다른 변경과 충돌했습니다. 최신 저장값을 표시했고 입력은 그대로 두었습니다. "
+                + "확인한 뒤 다시 저장하면 최신 버전 기준으로 저장됩니다.";
+        }
+    }
+
+    private static string EventLabel(string kind) => kind switch
+    {
+        "ALARM_OPENED" => "경보 발생(통신 끊김·상한 초과)",
+        "ALARM_RECOVERED" => "경보 복구",
+        "ALARM_CLOSED" => "경보 정상 종결",
+        "ALARM_FORCE_CLOSED" => "경보 강제 종결",
+        "AI_COMPLETED" => "내가 요청한 AI 분석 완료",
+        "AI_SCHEDULED" => "예약 AI 분석 완료(위험도 MEDIUM·HIGH)",
+        _ => kind
+    };
+
+    private static string ModeLabel(string mode) => mode switch
+    {
+        "OFF" => "끔",
+        "MOCK" => "Mock",
+        "LOCAL" => "로컬 수신",
+        _ => mode
+    };
+
+    // 버튼 하나의 처리. 4xx는 서버 문구를 그대로 보여 주고 입력은 지우지 않는다.
+    private async Task RunAsync(Func<Task> action, string done = "완료했습니다.")
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        Message = "처리 중입니다.";
+        try
+        {
+            await action();
+            if (Message == "처리 중입니다.")
+            {
+                Message = done;
+            }
+        }
+        catch (ApiFault error) when (error.Status >= 500)
+        {
+            Message = "서버 응답을 확인하지 못했습니다. 다시 조회해 결과를 확인해 주세요.";
+        }
+        catch (HttpRequestException)
+        {
+            Message = "네트워크 오류로 결과를 확인하지 못했습니다. 다시 조회해 결과를 확인해 주세요.";
+        }
+        catch (ApiFault error)
+        {
+            Message = error.Message + $" ({error.Status})";
+        }
+        catch (InvalidOperationException error)
+        {
+            Message = error.Message;
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+}

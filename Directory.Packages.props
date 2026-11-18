@@ -4,11 +4,13 @@
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
   </PropertyGroup>
 
-  <!-- FactoryMES 공유 패키지: 정확히 1.0.0만 허용한다. 새 버전은 이 줄을 바꿔 명시적으로 올린다. -->
+  <!-- FactoryMES 공유 패키지: 아래 정확한 버전만 허용한다. 새 버전은 이 줄을 바꿔 명시적으로 올린다.
+       Contracts 1.1.0: 알림 설정 DTO 추가(Backend·Web만 올림, 다른 서비스는 1.0.0 유지). -->
+
   <ItemGroup>
     <PackageVersion
       Include="FactoryMES.Contracts"
-      Version="[1.0.0]"
+      Version="[1.1.0]"
     />
     <PackageVersion
       Include="FactoryMES.Foundation"
@@ -32,3 +34,4 @@
     />
   </ItemGroup>
 </Project>
+

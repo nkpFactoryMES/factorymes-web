@@ -14,8 +14,11 @@ FactoryMES 관리자·작업자 화면을 제공하는 웹 서비스다. 한 이
 
 | 패키지 | 버전 | 출처 |
 |---|---|---|
-| FactoryMES.Contracts | 정확히 `[1.0.0]` | `nkpFactoryMES/factorymes-platform` Release `v1.0.0` |
-| FactoryMES.Foundation | 정확히 `[1.0.0]` | 같은 Release |
+| FactoryMES.Contracts | 정확히 `[1.1.0]` | `nkpFactoryMES/factorymes-platform` Release `v1.1.0` |
+| FactoryMES.Foundation | 정확히 `[1.0.0]` | `nkpFactoryMES/factorymes-platform` Release `v1.0.0` |
+
+Contracts 1.1.0은 알림 설정 DTO를 더한 버전이다. 화면을 쓰는 Backend와 Web만 올렸고
+다른 서비스는 1.0.0을 그대로 쓴다(필요한 소비자만 명시적으로 올리는 방식).
 
 - 버전은 `Directory.Packages.props`에서만 정한다. 공유 패키지 소스가 바뀌어도 이 레포는
   버전을 올리기 전까지 다시 빌드할 필요가 없다.

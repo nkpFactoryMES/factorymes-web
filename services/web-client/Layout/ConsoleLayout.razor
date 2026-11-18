@@ -115,7 +115,12 @@
 
         var production = new List<MenuItem> { new("/orders", "작업지시") };
         var equipment = new List<MenuItem> { new("/alarms", "경보") };
-        var notices = new List<MenuItem> { new("/inbox", "알림함") };
+        // 알림 설정은 모두에게 보인다(작업자는 본인 설정 읽기 전용).
+        var notices = new List<MenuItem>
+        {
+            new("/inbox", "알림함"),
+            new("/notification-settings", "알림 설정")
+        };
         if (Admin)
         {
             production.Add(new MenuItem("/reports", "생산 통계"));

@@ -1,0 +1,56 @@
+@* 알림 설정 읽기 전용 표. 이벤트마다 이메일·채팅 모드와 저장 버전을 보여 준다.
+   저장하지 않은 이벤트(버전 0)는 "미등록 · 끔"으로 표시한다(알림함만 받음). *@
+<div class="table-scroll">
+  <table class="setting-view">
+    <thead>
+      <tr>
+        <th>이벤트</th>
+        <th>이메일</th>
+        <th>채팅</th>
+        <th>저장</th>
+      </tr>
+    </thead>
+    <tbody>
+      @foreach (var setting in Settings)
+      {
+        <tr>
+          <td>@Label(setting.EventKind)</td>
+          <td>@Mode(setting.EmailMode)</td>
+          <td>@Mode(setting.ChatMode)</td>
+          <td>
+            @(setting.Version == 0
+              ? "미등록(기본값)"
+              : $"v{setting.Version} · {Kst(setting.UpdatedAtUtc)}")
+          </td>
+        </tr>
+      }
+    </tbody>
+  </table>
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public NotificationSettingView[] Settings { get; set; } = [];
+
+    private static string Label(string kind) => kind switch
+    {
+        "ALARM_OPENED" => "경보 발생(통신 끊김·상한 초과)",
+        "ALARM_RECOVERED" => "경보 복구",
+        "ALARM_CLOSED" => "경보 정상 종결",
+        "ALARM_FORCE_CLOSED" => "경보 강제 종결",
+        "AI_COMPLETED" => "내가 요청한 AI 분석 완료",
+        "AI_SCHEDULED" => "예약 AI 분석 완료(위험도 MEDIUM·HIGH)",
+        _ => kind
+    };
+
+    private static string Mode(string mode) => mode switch
+    {
+        "OFF" => "끔",
+        "MOCK" => "Mock",
+        "LOCAL" => "로컬 수신",
+        _ => mode
+    };
+
+    private static string Kst(DateTime? utc) =>
+        utc is null ? "-" : utc.Value.AddHours(9).ToString("yyyy-MM-dd HH:mm");
+}

@@ -4,9 +4,9 @@
     "net10.0": {
       "FactoryMES.Contracts": {
         "type": "Direct",
-        "requested": "[1.0.0, 1.0.0]",
-        "resolved": "1.0.0",
-        "contentHash": "qPII8MNJ77lntcINefns5ULB2cFecH5hmmAFjQVPWoFEFfedTJ8T/xJoExvg9nXSycV5CubG22hBPXKid0bNxA=="
+        "requested": "[1.1.0, 1.1.0]",
+        "resolved": "1.1.0",
+        "contentHash": "io7F19DPnNGbQPRuhcg/IqTNGXswBcg4wM5A7sftW7wc/KNRYaxO7ycHhdOtL+HK/i2D8XGrYjpmWShjqSfvNg=="
       },
       "Microsoft.AspNetCore.App.Internal.Assets": {
         "type": "Direct",
